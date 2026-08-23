@@ -3,6 +3,11 @@
 # "wg0" NetworkManager connection (see BarWidget.qml). nmcli names the
 # imported connection after the file's basename, so this renames it to
 # "wg0" afterwards to match what the rest of the plugin's scripts assume.
+#
+# pipefail so `$?` after an `out=$(cmd | head -c N)` capture still reflects
+# cmd's real exit status rather than head's (head virtually always exits
+# 0) -- needed everywhere below that caps a capture through a pipe.
+set -o pipefail
 conf="$1"
 
 if [[ ! -f "$conf" ]]; then
@@ -15,12 +20,13 @@ if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
   exit 0
 fi
 
-out=$(nmcli connection import type wireguard file "$conf" 2>&1)
-rc=$?
-# Capped -- nmcli's own output is normally a one-liner, but a hostile or
-# corrupt .conf could make it dump far more onto stderr, and that string
+# Capped while the pipe is read (head -c stops nmcli's writer with SIGPIPE
+# once 2000 bytes have passed through), not after a full-size capture --
+# nmcli's own output is normally a one-liner, but a hostile or corrupt
+# .conf could make it dump far more onto stderr, and that string
 # round-trips into the panel's error Text as-is.
-out="${out:0:2000}"
+out=$(nmcli connection import type wireguard file "$conf" 2>&1 | head -c 2000)
+rc=$?
 if [[ $rc -ne 0 ]]; then
   jq -nc --arg err "$out" '{ok:false, error:$err}'
   exit 0
@@ -38,7 +44,10 @@ fi
 # device, so both need renaming, not just the display id -- otherwise the
 # connection shows as active while wireguard-details/-ping look for a
 # "wg0" interface that was never actually created.
-if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 2>&1; then
+# Output discarded on purpose: it fed straight into this script's own
+# stdout (which the QML StdioCollector reads as JSON) unbounded and
+# unused -- the fixed message below is all the panel ever needed to show.
+if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 >/dev/null 2>&1; then
   jq -nc '{ok:false, error:"import gelukt maar hernoemen naar wg0 mislukt"}'
   exit 0
 fi

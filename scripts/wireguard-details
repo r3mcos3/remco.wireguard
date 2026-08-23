@@ -10,12 +10,15 @@ if ! ip link show "$iface" &>/dev/null; then
   exit 0
 fi
 
-ip_addr=$(ip -4 -o addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+# head -c, not -n: a byte ceiling rather than a line-count one, so an
+# unexpectedly long match still can't grow this variable unbounded.
+ip_addr=$(ip -4 -o addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -c 200)
 # nmcli -g escapes ":" as "\:" in its terse output; strip the backslash so
-# the endpoint reads "host:port" instead of "host\:port". head -n1: only
-# the first peer's endpoint is ever shown, and this also bounds the size
-# of what a many-peer config could otherwise hand back.
-endpoint=$(nmcli -g wireguard.peers connection show "$iface" 2>/dev/null | grep -oP 'endpoint=\K\S+' | tr -d '\\' | head -n 1)
+# the endpoint reads "host:port" instead of "host\:port". head -c 200: only
+# the first peer's endpoint is meant to show, and a real host:port is well
+# under 200 bytes, so this both bounds the size and -- in practice -- stays
+# within the first peer's line for a many-peer config.
+endpoint=$(nmcli -g wireguard.peers connection show "$iface" 2>/dev/null | grep -oP 'endpoint=\K\S+' | tr -d '\\' | head -c 200)
 rx_bytes=$(cat "/sys/class/net/$iface/statistics/rx_bytes" 2>/dev/null || echo 0)
 tx_bytes=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
 

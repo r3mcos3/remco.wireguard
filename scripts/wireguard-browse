@@ -9,11 +9,13 @@ dir=$(realpath -m -- "$dir" 2>/dev/null)
 parent=""
 [[ "$dir" != "/" ]] && parent=$(dirname -- "$dir")
 
-# Capped at 500 entries each -- an arbitrarily large directory (or one an
-# attacker seeded with thousands of files) must not let this script hand
-# the long-lived shell process an unbounded stdout payload to buffer.
-dirs_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -not -name '.*' -printf '%f\n' 2>/dev/null | sort | head -n 500 | jq -R -s 'split("\n") | map(select(length > 0))')
-files_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type f -iname '*.conf' -printf '%f\n' 2>/dev/null | sort | head -n 500 | jq -R -s 'split("\n") | map(select(length > 0))')
+# Capped at 500 entries each, before sort -- sort must buffer its entire
+# input before it can output anything, so head has to run first: an
+# arbitrarily large directory (or one an attacker seeded with thousands of
+# files) must not let this script hand the long-lived shell process an
+# unbounded amount to buffer, in sort or in its own stdout.
+dirs_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -not -name '.*' -printf '%f\n' 2>/dev/null | head -n 500 | sort | jq -R -s 'split("\n") | map(select(length > 0))')
+files_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type f -iname '*.conf' -printf '%f\n' 2>/dev/null | head -n 500 | sort | jq -R -s 'split("\n") | map(select(length > 0))')
 
 jq -nc --arg dir "$dir" --arg parent "$parent" --argjson dirs "$dirs_json" --argjson files "$files_json" \
   '{dir: $dir, parent: $parent, dirs: $dirs, files: $files}'
