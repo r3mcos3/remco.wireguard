@@ -40,7 +40,7 @@ WireGuard `.conf` — it gets imported and renamed to `wg0` automatically.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/<your-username>/remco.wireguard.git --enable
+omarchy plugin add https://github.com/r3mcos3/remco.wireguard.git --enable
 ```
 
 ## Usage
