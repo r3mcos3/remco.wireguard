@@ -1,0 +1,16 @@
+#!/bin/bash
+# Polled by the bar's "wireguard" command widget (see shell.json). Prints
+# Waybar-style JSON so the icon dims/brightens with connection.autoconnect
+# staying off -- this is purely a status read, never a toggle. Also reports
+# hasProfile so BarWidget.qml can swap the popup for an import prompt when
+# no wg0 NetworkManager connection has been set up yet.
+if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
+  state=$(nmcli -g GENERAL.STATE connection show wg0 2>/dev/null)
+  if [[ "$state" == activated* ]]; then
+    echo '{"text":"󰌾","tooltip":"WireGuard: aan","class":"active","hasProfile":true}'
+  else
+    echo '{"text":"󰌾","tooltip":"WireGuard: uit","class":"inactive","hasProfile":true}'
+  fi
+else
+  echo '{"text":"󰌾","tooltip":"WireGuard: geen profiel","class":"inactive","hasProfile":false}'
+fi

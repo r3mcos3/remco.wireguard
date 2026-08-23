@@ -24,6 +24,14 @@ No `wireguard-tools` (`wg`/`wg-quick`) and no file-dialog tool
 WireGuard module directly, and the "no profile yet" import browser is a
 plain script + `Process`, not a native dialog.
 
+The helper scripts in `scripts/` ship inside this repo and are invoked by
+path relative to the plugin's own install directory
+(`~/.config/omarchy/plugins/remco.wireguard/scripts/...`) — nothing is
+expected to already exist elsewhere on your system. Every script output
+that reaches the panel is size-capped (directory listings, nmcli error
+text, endpoint) and every dynamic string rendered in the UI is displayed
+as plain text, never interpreted as rich text/HTML.
+
 ## Privilege boundary
 
 Every command runs as your own user through NetworkManager's D-Bus API

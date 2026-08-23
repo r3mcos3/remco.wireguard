@@ -1,0 +1,46 @@
+#!/bin/bash
+# Imports a .conf file selected in the WireGuard panel's browser as the
+# "wg0" NetworkManager connection (see BarWidget.qml). nmcli names the
+# imported connection after the file's basename, so this renames it to
+# "wg0" afterwards to match what the rest of the plugin's scripts assume.
+conf="$1"
+
+if [[ ! -f "$conf" ]]; then
+  jq -nc '{ok:false, error:"bestand niet gevonden"}'
+  exit 0
+fi
+
+if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
+  jq -nc '{ok:false, error:"er bestaat al een wg0-profiel"}'
+  exit 0
+fi
+
+out=$(nmcli connection import type wireguard file "$conf" 2>&1)
+rc=$?
+# Capped -- nmcli's own output is normally a one-liner, but a hostile or
+# corrupt .conf could make it dump far more onto stderr, and that string
+# round-trips into the panel's error Text as-is.
+out="${out:0:2000}"
+if [[ $rc -ne 0 ]]; then
+  jq -nc --arg err "$out" '{ok:false, error:$err}'
+  exit 0
+fi
+
+name=$(sed -nE "s/^Connection '([^']+)'.*/\1/p" <<<"$out")
+if [[ -z "$name" ]]; then
+  jq -nc --arg err "$out" '{ok:false, error:$err}'
+  exit 0
+fi
+
+# nmcli names the imported connection (both its display id and its
+# connection.interface-name, i.e. the actual kernel device) after the
+# file's basename. The rest of this plugin's scripts assume a "wg0"
+# device, so both need renaming, not just the display id -- otherwise the
+# connection shows as active while wireguard-details/-ping look for a
+# "wg0" interface that was never actually created.
+if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 2>&1; then
+  jq -nc '{ok:false, error:"import gelukt maar hernoemen naar wg0 mislukt"}'
+  exit 0
+fi
+
+jq -nc '{ok:true}'

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Click handler for the "wireguard" bar module (see shell.json onClick).
+state=$(nmcli -g GENERAL.STATE connection show wg0 2>/dev/null)
+
+if [[ "$state" == activated* ]]; then
+  nmcli connection down wg0
+else
+  nmcli connection up wg0
+fi

@@ -1,0 +1,19 @@
+#!/bin/bash
+# Lists a directory's subfolders and *.conf files for the "no profile yet"
+# import browser in the WireGuard panel (see BarWidget.qml). Prints JSON:
+# {dir, parent, dirs: [...], files: [...]}.
+dir="${1:-$HOME}"
+dir=$(realpath -m -- "$dir" 2>/dev/null)
+[[ -d "$dir" && -r "$dir" ]] || dir="$HOME"
+
+parent=""
+[[ "$dir" != "/" ]] && parent=$(dirname -- "$dir")
+
+# Capped at 500 entries each -- an arbitrarily large directory (or one an
+# attacker seeded with thousands of files) must not let this script hand
+# the long-lived shell process an unbounded stdout payload to buffer.
+dirs_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -not -name '.*' -printf '%f\n' 2>/dev/null | sort | head -n 500 | jq -R -s 'split("\n") | map(select(length > 0))')
+files_json=$(find "$dir" -mindepth 1 -maxdepth 1 -type f -iname '*.conf' -printf '%f\n' 2>/dev/null | sort | head -n 500 | jq -R -s 'split("\n") | map(select(length > 0))')
+
+jq -nc --arg dir "$dir" --arg parent "$parent" --argjson dirs "$dirs_json" --argjson files "$files_json" \
+  '{dir: $dir, parent: $parent, dirs: $dirs, files: $files}'

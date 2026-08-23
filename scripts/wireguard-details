@@ -1,0 +1,27 @@
+#!/bin/bash
+# Polled by the WireGuard bar-widget panel while it's open (see BarWidget.qml
+# in ~/.config/omarchy/plugins/remco.wireguard/). Deliberately fast/cheap --
+# no ping here, that's a separate slower-cadence Process in the widget -- so
+# this can be polled every ~1.5s like the built-in network panel does.
+iface="wg0"
+
+if ! ip link show "$iface" &>/dev/null; then
+  echo '{"connected":false}'
+  exit 0
+fi
+
+ip_addr=$(ip -4 -o addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+# nmcli -g escapes ":" as "\:" in its terse output; strip the backslash so
+# the endpoint reads "host:port" instead of "host\:port". head -n1: only
+# the first peer's endpoint is ever shown, and this also bounds the size
+# of what a many-peer config could otherwise hand back.
+endpoint=$(nmcli -g wireguard.peers connection show "$iface" 2>/dev/null | grep -oP 'endpoint=\K\S+' | tr -d '\\' | head -n 1)
+rx_bytes=$(cat "/sys/class/net/$iface/statistics/rx_bytes" 2>/dev/null || echo 0)
+tx_bytes=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
+
+jq -nc \
+  --arg ip "${ip_addr:-}" \
+  --arg endpoint "${endpoint:-}" \
+  --argjson rx "${rx_bytes:-0}" \
+  --argjson tx "${tx_bytes:-0}" \
+  '{connected: true, ip: $ip, endpoint: $endpoint, rx_bytes: $rx, tx_bytes: $tx}'

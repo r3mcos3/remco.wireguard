@@ -31,7 +31,7 @@ BarWidget {
   }
 
   function toggleVpn() {
-    if (root.bar) root.bar.run("~/.config/omarchy/bar/scripts/wireguard-toggle")
+    if (root.bar) root.bar.run("~/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-toggle")
     statusRefreshTimer.restart()
     if (popupOpen) detailsRefreshTimer.restart()
   }
@@ -40,7 +40,7 @@ BarWidget {
 
   Process {
     id: statusProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/bar/scripts/wireguard-status"]
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-status"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -169,9 +169,21 @@ BarWidget {
     return ms >= 0 ? ms.toFixed(1) + " ms" : "--"
   }
 
+  // Text elements below default to Text.AutoText, which sniffs a string
+  // for HTML-looking content and, if it matches, renders it as rich text
+  // (including fetching any <img src="..."> it finds). Filenames, paths,
+  // and error/endpoint strings ultimately come from the filesystem or from
+  // a peer's own .conf, so they're not something to trust as markup --
+  // this drops the one character (`<`) that triggers that sniff, for the
+  // handful of strings that get displayed through a shared component
+  // (Button) that doesn't expose a textFormat override.
+  function plainText(s) {
+    return String(s === undefined || s === null ? "" : s).replace(/</g, "‹")
+  }
+
   Process {
     id: detailsProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/bar/scripts/wireguard-details"]
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-details"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -197,7 +209,7 @@ BarWidget {
 
   Process {
     id: pingProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/bar/scripts/wireguard-ping"]
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-ping"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -255,13 +267,13 @@ BarWidget {
     if (importProc.running) return
     root.importing = true
     root.importError = ""
-    importProc.command = [Quickshell.env("HOME") + "/.config/omarchy/bar/scripts/wireguard-import", root.browseDir + "/" + fileName]
+    importProc.command = [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-import", root.browseDir + "/" + fileName]
     importProc.running = true
   }
 
   Process {
     id: browseProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/bar/scripts/wireguard-browse", root.browseDir]
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-browse", root.browseDir]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -347,6 +359,7 @@ BarWidget {
           font.pixelSize: Style.font.display
           anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
         }
 
         ToggleSwitch {
@@ -376,6 +389,7 @@ BarWidget {
             font.pixelSize: Style.font.title
             font.bold: true
             elide: Text.ElideRight
+            textFormat: Text.PlainText
           }
 
           Text {
@@ -387,6 +401,7 @@ BarWidget {
             font.bold: true
             font.letterSpacing: 1.2
             elide: Text.ElideRight
+            textFormat: Text.PlainText
           }
         }
       }
@@ -458,6 +473,7 @@ BarWidget {
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
         }
 
         Row {
@@ -482,6 +498,7 @@ BarWidget {
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
             elide: Text.ElideMiddle
+            textFormat: Text.PlainText
           }
         }
 
@@ -502,7 +519,7 @@ BarWidget {
             leftAlign: true
             fontSize: Style.font.bodySmall
             foreground: root.bar.foreground
-            text: entry ? (entry.kind === "dir" ? entry.name + "/" : entry.name) : ""
+            text: entry ? root.plainText(entry.kind === "dir" ? entry.name + "/" : entry.name) : ""
             onClicked: {
               if (!entry) return
               if (entry.kind === "dir") root.navigateTo(root.browseDir + "/" + entry.name)
@@ -519,6 +536,7 @@ BarWidget {
           opacity: 0.5
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
         }
 
         Text {
@@ -529,6 +547,7 @@ BarWidget {
           opacity: 0.7
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
         }
 
         Text {
@@ -539,6 +558,7 @@ BarWidget {
           wrapMode: Text.WordWrap
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
         }
       }
     }
@@ -549,6 +569,7 @@ BarWidget {
     opacity: 0.6
     font.family: root.bar.fontFamily
     font.pixelSize: Style.font.bodySmall
+    textFormat: Text.PlainText
   }
 
   component DetailValue: Text {
@@ -558,5 +579,6 @@ BarWidget {
     Layout.fillWidth: true
     horizontalAlignment: Text.AlignRight
     elide: Text.ElideRight
+    textFormat: Text.PlainText
   }
 }
