@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "remco.wireguard",
+  "name": "WireGuard",
+  "version": "1.0.0",
+  "author": "Remco",
+  "license": "MIT",
+  "description": "WireGuard VPN status icon with a details panel and .conf import",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "WireGuard",
+    "description": "WireGuard VPN status icon with a details panel and .conf import",
+    "category": "Network",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
