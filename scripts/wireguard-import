@@ -9,6 +9,11 @@
 # 0) -- needed everywhere below that caps a capture through a pipe.
 set -o pipefail
 conf="$1"
+# Second arg is the panel's autoconnect toggle ("yes"/"no"); anything else
+# (missing, garbled) falls back to the safer "no" rather than silently
+# opting the profile into connecting on every boot.
+autoconnect="no"
+[[ "$2" == "yes" ]] && autoconnect="yes"
 
 if [[ ! -f "$conf" ]]; then
   jq -nc '{ok:false, error:"bestand niet gevonden"}'
@@ -45,17 +50,26 @@ fi
 # connection shows as active while wireguard-details/-ping look for a
 # "wg0" interface that was never actually created.
 #
-# connection.autoconnect also gets forced off here: nmcli's own import
-# default is "yes", so without this NetworkManager silently brings the
-# tunnel up on every boot -- surprising for a plugin whose whole point is
-# a manual on/off toggle in the panel.
+# connection.autoconnect also gets set explicitly here, from the panel's
+# toggle: nmcli's own import default is "yes", which would otherwise bring
+# the tunnel up on every boot with no prompt unless the user opted in.
 #
 # Output discarded on purpose: it fed straight into this script's own
 # stdout (which the QML StdioCollector reads as JSON) unbounded and
 # unused -- the fixed message below is all the panel ever needed to show.
-if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 connection.autoconnect no >/dev/null 2>&1; then
+if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 connection.autoconnect "$autoconnect" >/dev/null 2>&1; then
   jq -nc '{ok:false, error:"import gelukt maar hernoemen naar wg0 mislukt"}'
   exit 0
+fi
+
+# `nmcli connection import` creates the profile with autoconnect=yes before
+# the modify above ever runs, and NetworkManager can already have started
+# activating it in that window -- flipping autoconnect afterwards doesn't
+# cancel an activation already in flight. So when the user didn't opt into
+# autoconnect, explicitly bring it back down; best-effort, since it may
+# never actually have come up.
+if [[ "$autoconnect" == "no" ]]; then
+  nmcli connection down wg0 >/dev/null 2>&1 || true
 fi
 
 jq -nc '{ok:true}'

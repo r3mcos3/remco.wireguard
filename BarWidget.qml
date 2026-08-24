@@ -264,6 +264,10 @@ BarWidget {
   property var browseFiles: []
   property bool importing: false
   property string importError: ""
+  // Off by default -- this plugin is built around a manual connect/disconnect
+  // toggle, so a profile silently coming up on every boot would be
+  // surprising unless someone opts in for this particular import.
+  property bool importAutoconnect: false
 
   readonly property var browseEntries: {
     var out = []
@@ -285,7 +289,11 @@ BarWidget {
     if (importProc.running) return
     root.importing = true
     root.importError = ""
-    importProc.command = [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-import", root.browseDir + "/" + fileName]
+    importProc.command = [
+      Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-import",
+      root.browseDir + "/" + fileName,
+      root.importAutoconnect ? "yes" : "no"
+    ]
     importProc.running = true
   }
 
@@ -497,6 +505,33 @@ BarWidget {
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap
           textFormat: Text.PlainText
+        }
+
+        // Applies to the profile this import creates, not a global setting --
+        // nmcli's own import default is autoconnect=yes, which would
+        // otherwise bring the tunnel up on every boot with no prompt.
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+
+          ToggleSwitch {
+            id: autoconnectToggle
+            checked: root.importAutoconnect
+            anchors.verticalCenter: parent.verticalCenter
+            onToggled: root.importAutoconnect = !root.importAutoconnect
+          }
+
+          Text {
+            width: parent.width - autoconnectToggle.width - parent.spacing
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Automatisch verbinden bij opstarten"
+            color: root.bar.foreground
+            opacity: 0.8
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+          }
         }
 
         Row {
