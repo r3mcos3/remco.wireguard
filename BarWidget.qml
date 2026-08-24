@@ -446,13 +446,18 @@ BarWidget {
 
         Row {
           width: parent.width
-          InfoLabel { text: "IP Address  " }
-          DetailValue { text: root.details.ip || "--"; width: parent.width - Style.space(80) }
+          InfoLabel { id: ipLabel; text: "IP Address  " }
+          // Width derived from the label's own (measured) width, not a
+          // fixed magic number -- "IP Address  " and "Endpoint  " aren't
+          // the same width, so a shared fixed value left one row's value
+          // ending short of the other's right edge instead of both lining
+          // up flush right.
+          DetailValue { text: root.details.ip || "--"; width: parent.width - ipLabel.width }
         }
         Row {
           width: parent.width
-          InfoLabel { text: "Endpoint  " }
-          DetailValue { text: root.details.endpoint || "--"; width: parent.width - Style.space(80) }
+          InfoLabel { id: endpointLabel; text: "Endpoint  " }
+          DetailValue { text: root.details.endpoint || "--"; width: parent.width - endpointLabel.width }
         }
       }
 
