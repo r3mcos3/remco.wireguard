@@ -31,9 +31,7 @@ BarWidget {
   }
 
   function toggleVpn() {
-    if (root.bar) root.bar.run("~/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-toggle")
-    statusRefreshTimer.restart()
-    if (popupOpen) detailsRefreshTimer.restart()
+    if (!toggleProc.running) toggleProc.running = true
   }
 
   Component.onCompleted: root.refreshStatus()
@@ -64,6 +62,26 @@ BarWidget {
     running: true
     repeat: true
     onTriggered: root.refreshStatus()
+  }
+
+  // toggleVpn() used to fire-and-forget the toggle script via bar.run()
+  // (untrackable -- Bar.run() is Util.execDetached(), no completion signal)
+  // and then just restart the 5s status timer, meaning the toggle visibly
+  // lagged by up to 5s after nmcli itself had already finished. Running
+  // the script through our own Process instead gives a real completion
+  // signal (stdout closes once nmcli connection up/down returns, which
+  // itself blocks until the change has landed), so the toggle and details
+  // refresh fire right when the state actually changed, not on a timer.
+  Process {
+    id: toggleProc
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-toggle"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.refreshStatus()
+        if (root.popupOpen) root.refreshDetails()
+      }
+    }
   }
 
   // ---- Detail panel ----
