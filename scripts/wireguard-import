@@ -44,10 +44,16 @@ fi
 # device, so both need renaming, not just the display id -- otherwise the
 # connection shows as active while wireguard-details/-ping look for a
 # "wg0" interface that was never actually created.
+#
+# connection.autoconnect also gets forced off here: nmcli's own import
+# default is "yes", so without this NetworkManager silently brings the
+# tunnel up on every boot -- surprising for a plugin whose whole point is
+# a manual on/off toggle in the panel.
+#
 # Output discarded on purpose: it fed straight into this script's own
 # stdout (which the QML StdioCollector reads as JSON) unbounded and
 # unused -- the fixed message below is all the panel ever needed to show.
-if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 >/dev/null 2>&1; then
+if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 connection.autoconnect no >/dev/null 2>&1; then
   jq -nc '{ok:false, error:"import gelukt maar hernoemen naar wg0 mislukt"}'
   exit 0
 fi
