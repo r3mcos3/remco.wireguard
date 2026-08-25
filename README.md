@@ -1,9 +1,36 @@
 # WireGuard
 
-WireGuard VPN status icon for the Omarchy bar, with a click-to-open details
-panel: connection state, ping/packet-loss, throughput, IP address and
-endpoint. If no `wg0` connection exists yet, the panel shows an in-panel
-file browser to import a `.conf` instead.
+A WireGuard VPN status icon for the Omarchy bar. Click it to open a details
+panel with connection state, ping/packet-loss, live throughput, IP address
+and endpoint — the same kind of at-a-glance info as the built-in network
+panel, just for a WireGuard tunnel instead of Wi-Fi/Ethernet.
+
+No `wg0` NetworkManager connection yet? The panel swaps in an in-panel file
+browser so you can import a `.conf` without leaving the bar.
+
+## Screenshots
+
+<p>
+  <img src="assets/panel-connected.png" alt="Details panel while connected, showing ping, packet loss, throughput, IP address and endpoint" width="360">
+  <img src="assets/panel-import.png" alt="In-panel .conf file browser shown when no wg0 profile exists yet" width="360">
+</p>
+
+## Features
+
+- **Status icon** that reflects the real `wg0` connection state, polled
+  every 5s regardless of whether the panel is open.
+- **Details panel**: ping/packet-loss (rolling 10-sample window), live
+  download/upload throughput, total bytes transferred, tunnel IP, and peer
+  endpoint.
+- **One-click connect/disconnect** toggle that reacts as soon as
+  NetworkManager has actually applied the change — no polling delay.
+- **In-panel `.conf` import** with a plain directory browser (no external
+  file-dialog tool required) for when no profile exists yet.
+- **Autoconnect is an explicit opt-in**, off by default. Importing a
+  profile never silently sets it up to connect on every boot unless you
+  turn on "Connect automatically at startup" for that import.
+- **Remove profile**, with a confirmation prompt, to delete the `wg0`
+  connection and start over without touching a terminal.
 
 ## Dependencies
 
@@ -44,6 +71,9 @@ Omarchy install the active local user can usually do this without one.
 Nothing to configure up front. If you don't have a `wg0` NetworkManager
 connection yet, open the panel and use the file browser to pick a
 WireGuard `.conf` — it gets imported and renamed to `wg0` automatically.
+Before picking a file, you can turn on "Connect automatically at startup"
+if you want this particular profile to come up on every boot; leave it off
+(the default) to keep the tunnel fully manual.
 
 ## Install
 
@@ -57,17 +87,23 @@ Click the icon to open the details panel. Use the toggle to connect or
 disconnect. If no profile exists yet, browse to and click a `.conf` file
 to import it.
 
+To start over with a different profile, use "Remove profile" at the bottom
+of the panel (asks for confirmation first) — this deletes the `wg0`
+NetworkManager connection only, not the original `.conf` file, and the
+panel falls back to the import browser.
+
 ## Configure
 
 ```sh
 omarchy bar move remco.wireguard --section right
 ```
 
-## Remove
+## Uninstall
 
 ```sh
 omarchy plugin remove remco.wireguard
 ```
 
-Removing the plugin does not touch the `wg0` NetworkManager connection
-itself — your VPN profile stays intact.
+Uninstalling the plugin does not touch the `wg0` NetworkManager connection
+itself — your VPN profile stays intact. Use "Remove profile" in the panel
+(see [Usage](#usage)) if you want the connection gone too.
