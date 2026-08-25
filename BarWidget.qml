@@ -253,6 +253,39 @@ BarWidget {
     onTriggered: root.refreshPing()
   }
 
+  // ---- Remove the wg0 profile ----
+  property bool confirmRemoveOpen: false
+  property string removeError: ""
+
+  function removeProfile() {
+    if (!removeProc.running) removeProc.running = true
+  }
+
+  Process {
+    id: removeProc
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-remove"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        let data
+        try {
+          data = JSON.parse(text || "{}")
+        } catch (e) {
+          return
+        }
+        if (data.ok) {
+          root.removeError = ""
+          // hasProfile is derived live from nmcli by wireguard-status, not
+          // set optimistically here -- this just asks for a fresh read
+          // right away instead of waiting out the 5s poll interval.
+          root.refreshStatus()
+        } else {
+          root.removeError = data.error || "remove failed"
+        }
+      }
+    }
+  }
+
   // ---- "No profile yet" import browser ----
   // Only relevant while !hasProfile. A plain in-panel directory listing
   // (dirs first, then *.conf files) rather than a native file dialog --
@@ -327,14 +360,14 @@ BarWidget {
         try {
           data = JSON.parse(text || "{}")
         } catch (e) {
-          data = { ok: false, error: "onbekende fout" }
+          data = { ok: false, error: "unknown error" }
         }
         if (data.ok) {
           root.importError = ""
           root.refreshStatus()
           if (root.popupOpen) root.refreshDetails()
         } else {
-          root.importError = data.error || "import mislukt"
+          root.importError = data.error || "import failed"
         }
       }
     }
@@ -363,7 +396,18 @@ BarWidget {
     owner: root
     open: root.popupOpen
     contentWidth: popup.fittedContentWidth(Style.space(380))
-    contentHeight: popup.fittedContentHeight(column.implicitHeight)
+    // Floored at Style.space(230): the ConfirmDialog below is a sibling of
+    // `column`, sharing this same fixed-size popup window, but its centered
+    // card isn't part of `column`'s implicitHeight at all. In the
+    // disconnected-with-profile state -- just the hero row plus the Remove
+    // profile link, nothing else visible -- `column` alone is short enough
+    // that the window sized to fit only it left no room for the dialog's
+    // card, which got silently clipped by the window's real edges rather
+    // than visually overflowing (a PopupWindow is its own fixed-size
+    // Wayland surface, not a clipped-but-present Item). The floor is sized
+    // for the dialog's message + button row regardless of which state
+    // triggered it.
+    contentHeight: popup.fittedContentHeight(Math.max(column.implicitHeight, Style.space(230)))
 
     Column {
       id: column
@@ -420,7 +464,7 @@ BarWidget {
 
           Text {
             width: parent.width
-            text: !root.hasProfile ? "GEEN PROFIEL" : (root.connected ? "CONNECTED" : "NOT CONNECTED")
+            text: !root.hasProfile ? "NO PROFILE" : (root.connected ? "CONNECTED" : "NOT CONNECTED")
             color: Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -487,6 +531,48 @@ BarWidget {
         }
       }
 
+      // ---------- Remove profile ----------
+      // Visible whenever a profile exists, connected or not -- this is an
+      // escape hatch for "wrong file" or "start over", not tied to being
+      // connected. Text-link styling (not a full Button) so it reads as a
+      // secondary, deliberate action rather than competing with the
+      // primary connect toggle above.
+      Item {
+        visible: root.hasProfile
+        width: parent.width
+        implicitHeight: removeLink.implicitHeight
+
+        Text {
+          id: removeLink
+          anchors.right: parent.right
+          text: "Remove profile"
+          color: root.bar.urgent
+          opacity: removeMouse.containsMouse ? 1.0 : 0.6
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+
+          MouseArea {
+            id: removeMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.confirmRemoveOpen = true
+          }
+        }
+      }
+
+      Text {
+        visible: root.removeError !== ""
+        width: parent.width
+        text: root.removeError
+        color: root.bar.urgent
+        wrapMode: Text.WordWrap
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        textFormat: Text.PlainText
+      }
+
       // ---------- No profile yet: pick a .conf to import ----------
       // Plain in-panel directory listing rather than a native file dialog --
       // Quickshell's layer-shell panels don't have one available, and this
@@ -498,7 +584,7 @@ BarWidget {
 
         Text {
           width: parent.width
-          text: "Kies een WireGuard .conf-bestand om te importeren:"
+          text: "Choose a WireGuard .conf file to import:"
           color: root.bar.foreground
           opacity: 0.8
           font.family: root.bar.fontFamily
@@ -524,7 +610,7 @@ BarWidget {
           Text {
             width: parent.width - autoconnectToggle.width - parent.spacing
             anchors.verticalCenter: parent.verticalCenter
-            text: "Automatisch verbinden bij opstarten"
+            text: "Connect automatically at startup"
             color: root.bar.foreground
             opacity: 0.8
             font.family: root.bar.fontFamily
@@ -539,7 +625,7 @@ BarWidget {
           spacing: Style.space(8)
 
           Button {
-            text: ".. (boven)"
+            text: ".. (up)"
             fontSize: Style.font.bodySmall
             foreground: root.bar.foreground
             enabled: root.browseParent !== ""
@@ -589,7 +675,7 @@ BarWidget {
         Text {
           visible: root.browseEntries.length === 0
           width: parent.width
-          text: "Geen mappen of .conf-bestanden gevonden."
+          text: "No folders or .conf files found."
           color: root.bar.foreground
           opacity: 0.5
           font.family: root.bar.fontFamily
@@ -600,7 +686,7 @@ BarWidget {
         Text {
           visible: root.importing
           width: parent.width
-          text: "Bezig met importeren..."
+          text: "Importing..."
           color: root.bar.foreground
           opacity: 0.7
           font.family: root.bar.fontFamily
@@ -618,6 +704,19 @@ BarWidget {
           font.pixelSize: Style.font.bodySmall
           textFormat: Text.PlainText
         }
+      }
+    }
+
+    ConfirmDialog {
+      anchors.fill: parent
+      opened: root.confirmRemoveOpen
+      z: 10
+      message: "Remove this WireGuard profile? You'll need to re-import the .conf file to reconnect."
+      confirmText: "Remove"
+      onCanceled: root.confirmRemoveOpen = false
+      onConfirmed: {
+        root.confirmRemoveOpen = false
+        root.removeProfile()
       }
     }
   }

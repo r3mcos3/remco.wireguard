@@ -16,12 +16,12 @@ autoconnect="no"
 [[ "$2" == "yes" ]] && autoconnect="yes"
 
 if [[ ! -f "$conf" ]]; then
-  jq -nc '{ok:false, error:"bestand niet gevonden"}'
+  jq -nc '{ok:false, error:"file not found"}'
   exit 0
 fi
 
 if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
-  jq -nc '{ok:false, error:"er bestaat al een wg0-profiel"}'
+  jq -nc '{ok:false, error:"a wg0 profile already exists"}'
   exit 0
 fi
 
@@ -58,7 +58,7 @@ fi
 # stdout (which the QML StdioCollector reads as JSON) unbounded and
 # unused -- the fixed message below is all the panel ever needed to show.
 if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 connection.autoconnect "$autoconnect" >/dev/null 2>&1; then
-  jq -nc '{ok:false, error:"import gelukt maar hernoemen naar wg0 mislukt"}'
+  jq -nc '{ok:false, error:"import succeeded but renaming to wg0 failed"}'
   exit 0
 fi
 

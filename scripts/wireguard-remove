@@ -1,0 +1,10 @@
+#!/bin/bash
+# Deletes the "wg0" NetworkManager connection created by wireguard-import,
+# so the panel falls back to the "no profile yet" import browser. Only
+# removes the NetworkManager connection profile -- the original .conf file
+# the user imported from is untouched.
+if nmcli connection delete wg0 >/dev/null 2>&1; then
+  jq -nc '{ok:true}'
+else
+  jq -nc '{ok:false, error:"remove failed"}'
+fi

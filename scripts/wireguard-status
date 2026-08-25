@@ -7,10 +7,10 @@
 if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
   state=$(nmcli -g GENERAL.STATE connection show wg0 2>/dev/null)
   if [[ "$state" == activated* ]]; then
-    echo '{"text":"󰌾","tooltip":"WireGuard: aan","class":"active","hasProfile":true}'
+    echo '{"text":"󰌾","tooltip":"WireGuard: on","class":"active","hasProfile":true}'
   else
-    echo '{"text":"󰌾","tooltip":"WireGuard: uit","class":"inactive","hasProfile":true}'
+    echo '{"text":"󰌾","tooltip":"WireGuard: off","class":"inactive","hasProfile":true}'
   fi
 else
-  echo '{"text":"󰌾","tooltip":"WireGuard: geen profiel","class":"inactive","hasProfile":false}'
+  echo '{"text":"󰌾","tooltip":"WireGuard: no profile","class":"inactive","hasProfile":false}'
 fi
