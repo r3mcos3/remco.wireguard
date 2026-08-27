@@ -587,14 +587,16 @@ BarWidget {
       }
 
       // ---------- Health-check ping target ----------
-      // Full-width settings row, not tied to the connected state (it's a
-      // config option). Split-tunnel configs only route specific subnets
-      // through wg0, so the default 1.1.1.1 health ping gets dropped and the
-      // icon goes red even though the VPN is healthy -- let the user point it
-      // at a host the tunnel actually routes instead of editing the config
-      // file by hand. Empty input clears the override back to the default.
+      // Full-width settings row shown regardless of how wg0 is managed
+      // (NetworkManager profile or wg-quick) and whether it's connected yet
+      // -- it's a config option, not a connection detail. Split-tunnel
+      // configs only route specific subnets through wg0, so the default
+      // 1.1.1.1 health ping gets dropped and the icon goes red even though
+      // the VPN is healthy; let the user point it at a host the tunnel
+      // actually routes instead of editing the config file by hand. Empty
+      // input clears the override back to the default.
       Column {
-        visible: root.hasProfile
+        visible: true
         width: parent.width
         spacing: Style.spacing.labelGap
 
