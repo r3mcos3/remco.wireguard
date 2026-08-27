@@ -110,15 +110,20 @@ the tunnel (e.g. a full tunnel with `AllowedIPs = 0.0.0.0/0`). For a
 internet link instead, so the ping is dropped and the icon shows red even
 though the VPN is healthy.
 
-If you use a split tunnel, set the plugin config file to ping a host your
-tunnel really routes — an internal server or an IP in your `AllowedIPs`:
+If you use a split tunnel, point the health check at a host your tunnel
+really routes — an internal server or an IP in your `AllowedIPs`:
 
-`~/.config/omarchy/plugins/remco.wireguard/config`
+- **From the details panel:** click the WireGuard icon, then edit the
+  "Ping Target" field and press **Save** (or hit Enter). Leaving it empty
+  and pressing Save restores the default `1.1.1.1`.
+- **Manually:** set the plugin config file:
 
-```
-# Host to ping through the wg0 tunnel for the health check.
-ping-target=10.0.0.5
-```
+  `~/.config/omarchy/plugins/remco.wireguard/config`
+
+  ```
+  # Host to ping through the wg0 tunnel for the health check.
+  ping-target=10.0.0.5
+  ```
 
 A plain IP or hostname is accepted. With no `config` file (or no
 `ping-target` line), the plugin falls back to `1.1.1.1`.

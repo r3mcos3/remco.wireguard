@@ -95,6 +95,19 @@ BarWidget {
   property real downloadRate: 0
   property real uploadRate: 0
 
+  // ---- Health-check ping target (configurable for split tunnels) ----
+  // Split-tunnel configs only route specific subnets through wg0, so the
+  // default 1.1.1.1 health ping is dropped -- the icon goes red even though
+  // the VPN is healthy. Expose the target so the user can point it at a host
+  // the tunnel actually routes, without editing the config file by hand.
+  property string pingTargetInput: ""
+  property string pingTargetError: ""
+  property bool pingTargetSaving: false
+  // Tracks field focus at root scope so detailsProc can avoid clobbering a
+  // mid-edit value (the TextField itself lives deep inside the popup, out of
+  // the Process's lexical scope).
+  property bool pingTargetFocused: false
+
   // Rolling window of the last N one-shot pings, each {ok, ms}. Packet loss
   // is the failure ratio across the window; latency is the most recent
   // successful sample (matches the bar-icon-adjacent "current reading" feel
@@ -151,6 +164,17 @@ BarWidget {
 
   function refreshPing() {
     if (!pingProc.running) pingProc.running = true
+  }
+
+  function savePingTarget() {
+    if (setPingTargetProc.running) return
+    setPingTargetProc.command = [
+      Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-set-ping-target",
+      root.pingTargetInput.trim()
+    ]
+    root.pingTargetSaving = true
+    root.pingTargetError = ""
+    setPingTargetProc.running = true
   }
 
   function updateThroughput(next) {
@@ -213,6 +237,11 @@ BarWidget {
         }
         root.details = data
         root.updateThroughput(data)
+        // Refresh the ping-target field from disk, but only when the user
+        // isn't mid-edit in it (editingFinished drives the value otherwise).
+        if (!root.pingTargetFocused && data.ping_target !== undefined) {
+          root.pingTargetInput = data.ping_target || ""
+        }
       }
     }
   }
@@ -281,6 +310,32 @@ BarWidget {
           root.refreshStatus()
         } else {
           root.removeError = data.error || "remove failed"
+        }
+      }
+    }
+  }
+
+  // ---- Persist the health-check ping target to the config file ----
+  Process {
+    id: setPingTargetProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.pingTargetSaving = false
+        let data
+        try {
+          data = JSON.parse(text || "{}")
+        } catch (e) {
+          return
+        }
+        if (data.ok) {
+          root.pingTargetError = ""
+          // Re-read so the panel and the health check agree on the live
+          // value, and give the ping window a clean start on the new host.
+          root.refreshDetails()
+          root.pingSamples = []
+        } else {
+          root.pingTargetError = data.error || "save failed"
         }
       }
     }
@@ -528,6 +583,65 @@ BarWidget {
           width: parent.width
           InfoLabel { id: endpointLabel; text: "Endpoint  " }
           DetailValue { text: root.details.endpoint || "--"; width: parent.width - endpointLabel.width }
+        }
+      }
+
+      // ---------- Health-check ping target ----------
+      // Full-width settings row, not tied to the connected state (it's a
+      // config option). Split-tunnel configs only route specific subnets
+      // through wg0, so the default 1.1.1.1 health ping gets dropped and the
+      // icon goes red even though the VPN is healthy -- let the user point it
+      // at a host the tunnel actually routes instead of editing the config
+      // file by hand. Empty input clears the override back to the default.
+      Column {
+        visible: root.hasProfile
+        width: parent.width
+        spacing: Style.spacing.labelGap
+
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(8)
+
+          InfoLabel {
+            id: pingTargetLabel
+            text: "Ping Target"
+            Layout.alignment: Qt.AlignVCenter
+          }
+
+          TextField {
+            id: pingTargetField
+            text: root.pingTargetInput
+            placeholderText: "1.1.1.1 (default)"
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            Layout.fillWidth: true
+            enabled: !root.pingTargetSaving
+            onActiveFocusChanged: root.pingTargetFocused = activeFocus
+            onEditingFinished: root.pingTargetInput = text
+            Keys.onReturnPressed: root.savePingTarget()
+            Keys.onEnterPressed: root.savePingTarget()
+          }
+
+          Button {
+            text: root.pingTargetSaving ? "Saving…" : "Save"
+            fontSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            enabled: !root.pingTargetSaving
+            Layout.alignment: Qt.AlignVCenter
+            onClicked: root.savePingTarget()
+          }
+        }
+
+        Text {
+          visible: root.pingTargetError !== ""
+          width: parent.width
+          text: root.pingTargetError
+          color: root.bar.urgent
+          wrapMode: Text.WordWrap
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
         }
       }
 

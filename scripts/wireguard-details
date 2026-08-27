@@ -5,6 +5,11 @@
 # this can be polled every ~1.5s like the built-in network panel does.
 iface="wg0"
 
+# Plugin config file (this script lives in scripts/ beneath the plugin dir).
+# Holds the optional health-check ping target; resolved from wherever this
+# file is so it works regardless of clone location.
+config="$(dirname -- "$(cd -- "$(dirname -- "$0")" && pwd)")/config"
+
 if ! ip link show "$iface" &>/dev/null; then
   echo '{"connected":false}'
   exit 0
@@ -22,9 +27,15 @@ endpoint=$(nmcli -g wireguard.peers connection show "$iface" 2>/dev/null | grep 
 rx_bytes=$(cat "/sys/class/net/$iface/statistics/rx_bytes" 2>/dev/null || echo 0)
 tx_bytes=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
 
+# Current health-check ping target, so the panel's field can show the real
+# configured host instead of the default. Empty means the script falls back
+# to 1.1.1.1.
+ping_target=$(sed -nE 's/^[[:space:]]*ping-target[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$config" 2>/dev/null | head -1)
+
 jq -nc \
   --arg ip "${ip_addr:-}" \
   --arg endpoint "${endpoint:-}" \
   --argjson rx "${rx_bytes:-0}" \
   --argjson tx "${tx_bytes:-0}" \
-  '{connected: true, ip: $ip, endpoint: $endpoint, rx_bytes: $rx, tx_bytes: $tx}'
+  --arg ping_target "${ping_target:-}" \
+  '{connected: true, ip: $ip, endpoint: $endpoint, rx_bytes: $rx, tx_bytes: $tx, ping_target: $ping_target}'

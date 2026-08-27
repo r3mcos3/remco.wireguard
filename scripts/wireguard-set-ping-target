@@ -1,0 +1,43 @@
+#!/bin/bash
+# Persists the health-check ping target into the plugin config file
+# (~/.config/omarchy/plugins/remco.wireguard/config), replacing any existing
+# `ping-target=` line -- or removing it entirely when an empty value is given
+# so the health check falls back to its default host (1.1.1.1). Called from
+# the panel's "Ping Target" field (see BarWidget.qml).
+#
+# Prints {ok:true} on success, {ok:false,error:...} on a bad host input.
+set -o pipefail
+
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+config="$(dirname -- "$script_dir")/config"
+
+target="${1:-}"
+
+# A host may be an IP or a name; reject anything carrying whitespace or a #
+# (line-comment confusion / injection). ping does the real resolution.
+if [[ "$target" =~ [[:space:]#] ]]; then
+  jq -nc --arg err "invalid host" '{ok:false,error:$err}'
+  exit 0
+fi
+
+if [[ -z "$target" ]]; then
+  # Empty input: drop any ping-target line to restore the default.
+  if [[ -f "$config" ]]; then
+    sed -i -E '/^[[:space:]]*ping-target[[:space:]]*=/d' "$config" \
+      || { jq -nc '{ok:false,error:"failed to update config"}'; exit 0; }
+  fi
+  jq -nc '{ok:true}'
+  exit 0
+fi
+
+mkdir -p "$(dirname -- "$config")"
+
+if [[ -f "$config" ]] && grep -qE '^[[:space:]]*ping-target[[:space:]]*=' "$config"; then
+  sed -i -E "s|^([[:space:]]*)ping-target[[:space:]]*=.*|\1ping-target=$target|" "$config" \
+    || { jq -nc '{ok:false,error:"failed to update config"}'; exit 0; }
+else
+  printf 'ping-target=%s\n' "$target" >> "$config" \
+    || { jq -nc '{ok:false,error:"failed to update config"}'; exit 0; }
+fi
+
+jq -nc '{ok:true}'
