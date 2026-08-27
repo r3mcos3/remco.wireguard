@@ -20,10 +20,11 @@ if ! ip link show "$iface" &>/dev/null; then
   exit 0
 fi
 
-# Path to the plugin's own directory (scripts/ sits inside it), resolved
-# from wherever this file lives so it works regardless of clone location.
-plugin_dir=$(cd -- "$(dirname -- "$0")" && pwd)
-cfg="$plugin_dir/config"
+# Path to the plugin's own directory (this script lives in scripts/ beneath
+# it), resolved from wherever this file is so it works regardless of clone
+# location.
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+cfg="$(dirname -- "$script_dir")/config"
 
 target="1.1.1.1"
 if [[ -f "$cfg" ]]; then
