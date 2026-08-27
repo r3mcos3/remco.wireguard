@@ -1,0 +1,8 @@
+# Ping target for the WireGuard health check (see README.md).
+# Set this to a host that your tunnel actually routes. For a split-tunnel
+# this must be something in your AllowedIPs, not a public address like
+# 1.1.1.1 -- otherwise the ping is dropped and the icon shows red even
+# though the VPN is healthy.
+#
+# Uncomment and set to your internal ping target:
+# ping-target=10.0.0.5

@@ -98,6 +98,31 @@ panel falls back to the import browser.
 omarchy bar move remco.wireguard --section right
 ```
 
+### Ping target
+
+The bar icon's health color and the panel's ping/packet-loss are driven by a
+single `ping` sent through the `wg0` tunnel every few seconds. By default it
+pings `1.1.1.1`.
+
+That default only works when your config actually routes `1.1.1.1` through
+the tunnel (e.g. a full tunnel with `AllowedIPs = 0.0.0.0/0`). For a
+**split-tunnel** config, `1.1.1.1` is usually routed over your normal
+internet link instead, so the ping is dropped and the icon shows red even
+though the VPN is healthy.
+
+If you use a split tunnel, set the plugin config file to ping a host your
+tunnel really routes — an internal server or an IP in your `AllowedIPs`:
+
+`~/.config/omarchy/plugins/remco.wireguard/config`
+
+```
+# Host to ping through the wg0 tunnel for the health check.
+ping-target=10.0.0.5
+```
+
+A plain IP or hostname is accepted. With no `config` file (or no
+`ping-target` line), the plugin falls back to `1.1.1.1`.
+
 ## Uninstall
 
 ```sh

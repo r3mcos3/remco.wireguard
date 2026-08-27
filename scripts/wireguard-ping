@@ -4,6 +4,15 @@
 # Prints JSON; the widget keeps its own rolling window of these samples to
 # derive a packet-loss percentage over time (a single ping can only ever
 # read as 0% or 100% loss on its own).
+#
+# The host pinged through the tunnel is configurable via a plugin config
+# file: put `ping-target=<host>` on a line in
+#   ~/.config/omarchy/plugins/remco.wireguard/config
+# (anywhere a valid ping host -- IP or name -- is accepted). This matters
+# for split-tunnel setups: the default 1.1.1.1 is only routed through the
+# tunnel when AllowedIPs covers it (e.g. a full tunnel), so a split-tunnel
+# config that doesn't route 1.1.1.1 would otherwise show red despite a
+# healthy VPN. Point this at a host that your tunnel actually routes.
 iface="wg0"
 
 if ! ip link show "$iface" &>/dev/null; then
@@ -11,7 +20,18 @@ if ! ip link show "$iface" &>/dev/null; then
   exit 0
 fi
 
-output=$(ping -c 1 -W 1 -I "$iface" 1.1.1.1 2>/dev/null)
+# Path to the plugin's own directory (scripts/ sits inside it), resolved
+# from wherever this file lives so it works regardless of clone location.
+plugin_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+cfg="$plugin_dir/config"
+
+target="1.1.1.1"
+if [[ -f "$cfg" ]]; then
+  v=$(sed -nE 's/^[[:space:]]*ping-target[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$cfg" | head -1)
+  [[ -n "$v" ]] && target="$v"
+fi
+
+output=$(ping -c 1 -W 1 -I "$iface" "$target" 2>/dev/null)
 ms=$(grep -oP 'time=\K[0-9.]+' <<<"$output")
 
 if [[ -n "$ms" ]]; then
