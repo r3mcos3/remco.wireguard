@@ -6,13 +6,13 @@ import qs.Commons
 import qs.Ui
 
 // WireGuard status icon, plus a click-to-open panel listing every WireGuard
-// NetworkManager profile -- each with its own connect switch, Rename and
-// Remove -- and a connection-details grid for the connected one, modeled on
-// the built-in network panel (Ping / Packet Loss / Receiving / Sending /
-// Downloaded / Uploaded / IP Address), with an "Endpoint" row standing in
-// for "Gateway" -- a full-tunnel WireGuard peer doesn't have a LAN gateway
-// the way a Wi-Fi/Ethernet link does, but the peer endpoint is the closest
-// equivalent.
+// NetworkManager profile -- each with its own connect switch, Autoconnect
+// switch, Rename and Remove -- and a connection-details grid for the
+// connected one, modeled on the built-in network panel (Ping / Packet Loss /
+// Receiving / Sending / Downloaded / Uploaded / IP Address), with an
+// "Endpoint" row standing in for "Gateway" -- a full-tunnel WireGuard peer
+// doesn't have a LAN gateway the way a Wi-Fi/Ethernet link does, but the
+// peer endpoint is the closest equivalent.
 //
 // Profiles are addressed by NetworkManager UUID throughout, never by name:
 // names are user-editable here and NetworkManager doesn't require them to
@@ -121,6 +121,46 @@ BarWidget {
         if (!data || !data.ok) root.actionError = (data && data.error) || "connect/disconnect failed"
         root.refreshStatus()
         if (root.popupOpen) root.refreshDetails()
+      }
+    }
+  }
+
+  // ---- Autoconnect ----
+  // NetworkManager acts on autoconnect=yes right away, so switching it on
+  // can also bring a profile up (unless it was disconnected by hand since
+  // the last boot); switching it off never drops a connected tunnel.
+  //
+  // The switch shows the requested value while the change is in flight and
+  // the new value is written into `profiles` once it succeeds, so the knob
+  // doesn't snap back for the moment until the next status read lands.
+  property string autoconnectBusyUuid: ""
+  property bool autoconnectTarget: false
+
+  function setProfileAutoconnect(uuid, on) {
+    if (autoconnectProc.running) return
+    root.actionError = ""
+    root.autoconnectBusyUuid = uuid
+    root.autoconnectTarget = on
+    autoconnectProc.command = [root.scriptDir + "wireguard-autoconnect", uuid, on ? "yes" : "no"]
+    autoconnectProc.running = true
+  }
+
+  Process {
+    id: autoconnectProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var uuid = root.autoconnectBusyUuid
+        var data = root.parseJson(text)
+        if (data && data.ok) {
+          root.profiles = root.profiles.map(function(p) {
+            return p.uuid === uuid ? Object.assign({}, p, { autoconnect: root.autoconnectTarget }) : p
+          })
+        } else {
+          root.actionError = (data && data.error) || "changing autoconnect failed"
+        }
+        root.autoconnectBusyUuid = ""
+        root.refreshStatus()
       }
     }
   }
@@ -729,7 +769,11 @@ BarWidget {
             id: row
             required property var modelData
             readonly property bool isActive: modelData.active === true
-            readonly property bool isBusy: root.busyUuid === modelData.uuid
+            // Switching autoconnect on can start an activation, so the
+            // connect switch holds off while that change is in flight too.
+            readonly property bool autoconnectBusy: root.autoconnectBusyUuid === modelData.uuid
+            readonly property bool autoconnectOn: autoconnectBusy ? root.autoconnectTarget : modelData.autoconnect === true
+            readonly property bool isBusy: root.busyUuid === modelData.uuid || (autoconnectBusy && root.autoconnectTarget)
               || modelData.state === "activating" || modelData.state === "deactivating"
             // Marks which tunnel the details above describe, but only when
             // there's more than one to choose between.
@@ -797,6 +841,58 @@ BarWidget {
                   text: "Remove"
                   urgent: true
                   onClicked: root.askRemove(row.modelData)
+                }
+              }
+
+              // A compact switch sized off its caption, like the network
+              // panel's "AUTOMATIC" band switch. Not a Row: the switch is
+              // shifted left by its hover-ring padding so the track lines up
+              // with the text above it.
+              Item {
+                implicitWidth: autoconnectSwitch.width - autoconnectSwitch.cursorPad + Style.space(6) + autoconnectLabel.implicitWidth
+                implicitHeight: Math.max(autoconnectSwitch.implicitHeight, autoconnectLabel.implicitHeight)
+
+                ToggleSwitch {
+                  id: autoconnectSwitch
+                  x: -cursorPad
+                  anchors.verticalCenter: parent.verticalCenter
+                  trackHeight: Math.round(autoconnectLabel.font.pixelSize * 1.2)
+                  cursorPad: Style.space(3)
+                  checked: row.autoconnectOn
+                  busy: row.autoconnectBusy
+                  foreground: root.bar.foreground
+                  onToggled: root.setProfileAutoconnect(row.modelData.uuid, !row.autoconnectOn)
+
+                  PanelToolTip {
+                    visible: autoconnectSwitch.containsMouse || autoconnectLabelMouse.containsMouse
+                    text: row.autoconnectOn
+                      ? (row.isActive ? "Stop connecting automatically. Stays connected for now." : "Stop connecting automatically.")
+                      : (row.isActive ? "Connect automatically, e.g. at startup." : "Connect automatically, e.g. at startup. May also connect it right away.")
+                    fontFamily: root.bar.fontFamily
+                  }
+                }
+
+                Text {
+                  id: autoconnectLabel
+                  anchors.left: autoconnectSwitch.right
+                  anchors.leftMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "AUTOCONNECT"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  opacity: row.autoconnectOn ? 1.0 : 0.7
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                  textFormat: Text.PlainText
+
+                  MouseArea {
+                    id: autoconnectLabelMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: if (!row.autoconnectBusy) root.setProfileAutoconnect(row.modelData.uuid, !row.autoconnectOn)
+                  }
                 }
               }
             }

@@ -1,0 +1,29 @@
+#!/bin/bash
+# Turns a WireGuard profile's autoconnect on or off:
+# wireguard-autoconnect <uuid> <yes|no>. Takes an explicit value rather than
+# flipping the current one, like wireguard-toggle.
+#
+# NetworkManager acts on autoconnect=yes straight away, not only at the next
+# boot: a profile that's down gets brought up within a moment. Turning it
+# off never drops a connected tunnel.
+source "$(dirname -- "$0")/wireguard-common"
+
+uuid="$1"
+value="$2"
+
+[[ $value == yes || $value == no ]] || fail "invalid value"
+is_wireguard_uuid "$uuid" || fail "profile not found"
+
+nmcli connection modify uuid "$uuid" connection.autoconnect "$value" >/dev/null 2>&1 || fail "changing autoconnect failed"
+
+# Give an activation that just kicked off a few seconds to land, so the
+# panel's refresh right after this shows where the profile ended up rather
+# than a passing "activating".
+if [[ $value == yes ]]; then
+  for _ in {1..10}; do
+    [[ $(nmcli -g GENERAL.STATE connection show uuid "$uuid" 2>/dev/null) == activating ]] || break
+    sleep 0.5
+  done
+fi
+
+jq -nc '{ok:true}'

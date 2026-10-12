@@ -39,7 +39,8 @@ in-panel file browser.
   Any file name works — the profile gets the next free `wgN` interface.
 - **Autoconnect is an explicit opt-in**, off by default. Importing a
   profile never silently sets it up to connect on every boot unless you
-  turn on "Connect automatically at startup" for that import.
+  turn on "Connect automatically at startup" for that import, and each
+  profile has an Autoconnect switch to change it any time afterwards.
 - **Remove** any profile, with a confirmation prompt, without touching a
   terminal.
 
@@ -98,6 +99,12 @@ Click the icon to open the panel. Use a profile's switch to connect or
 disconnect it, "Rename" to change its name (Enter saves, Escape cancels),
 and "Remove" to delete it (asks for confirmation first) — this deletes the
 NetworkManager connection only, not the original `.conf` file.
+
+The small "Autoconnect" switch under a profile lets NetworkManager connect
+it on its own, e.g. at startup. NetworkManager acts on this right away, so
+turning it on can also connect the profile immediately (unless you
+disconnected it by hand since the last boot); turning it off never
+disconnects a running tunnel.
 
 Connection details describe the connected profile. If more than one is
 connected at once, click a profile's name to choose which one they show.
