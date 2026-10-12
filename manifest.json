@@ -5,7 +5,7 @@
   "version": "1.1.0",
   "author": "Remco",
   "license": "MIT",
-  "description": "WireGuard VPN status icon with a details panel and .conf import",
+  "description": "WireGuard VPN status icon with multiple profiles, a details panel and .conf import",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "WireGuard",
-    "description": "WireGuard VPN status icon with a details panel and .conf import",
+    "description": "WireGuard VPN status icon with multiple profiles, a details panel and .conf import",
     "category": "Network",
     "defaultSection": "right",
     "allowMultiple": false

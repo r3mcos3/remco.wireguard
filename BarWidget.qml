@@ -5,53 +5,83 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// WireGuard status icon, plus a click-to-open detail panel modeled on the
-// built-in network panel's connection-details grid (Ping / Packet Loss /
+// WireGuard status icon, plus a click-to-open panel listing every WireGuard
+// NetworkManager profile -- each with its own connect switch, Autoconnect
+// switch, Rename and Remove -- and a connection-details grid for the
+// connected one, modeled on the built-in network panel (Ping / Packet Loss /
 // Receiving / Sending / Downloaded / Uploaded / IP Address), with an
 // "Endpoint" row standing in for "Gateway" -- a full-tunnel WireGuard peer
 // doesn't have a LAN gateway the way a Wi-Fi/Ethernet link does, but the
 // peer endpoint is the closest equivalent.
+//
+// Profiles are addressed by NetworkManager UUID throughout, never by name:
+// names are user-editable here and NetworkManager doesn't require them to
+// be unique.
 BarWidget {
   id: root
   moduleName: "remco.wireguard"
 
-  readonly property string iface: "wg0"
+  readonly property string scriptDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/"
 
-  // ---- Bar icon (unchanged behavior: poll every 5s regardless of the panel) ----
+  function parseJson(text) {
+    try {
+      return JSON.parse(text || "{}")
+    } catch (e) {
+      return null
+    }
+  }
+
+  // ---- Bar icon + profile list (polled every 5s regardless of the panel) ----
   property string statusText: ""
   property string statusTooltip: "WireGuard VPN"
   property bool vpnActive: false
-  // Whether an "wg0" NetworkManager connection exists at all. False on a
-  // fresh install / new machine before any .conf has been imported -- the
-  // panel then shows the file browser below instead of the connection UI.
-  property bool hasProfile: true
+  // [{uuid, name, device, state, active, autoconnect}], from wireguard-status.
+  property var profiles: []
+  property string profilesJson: "[]"
+  // Until the first status read lands, "no profiles" just means "not
+  // loaded yet" -- don't flash the import browser on a fresh shell start.
+  property bool statusLoaded: false
+  readonly property bool hasProfile: profiles.length > 0
+
+  // A refresh asked for while a poll is already in flight is queued rather
+  // than dropped -- otherwise a toggle that finishes mid-poll would show
+  // the pre-toggle state until the next 5s tick.
+  property bool statusPending: false
 
   function refreshStatus() {
-    if (!statusProc.running) statusProc.running = true
-  }
-
-  function toggleVpn() {
-    if (!toggleProc.running) toggleProc.running = true
+    if (statusProc.running) statusPending = true
+    else statusProc.running = true
   }
 
   Component.onCompleted: root.refreshStatus()
 
   Process {
     id: statusProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-status"]
+    command: [root.scriptDir + "wireguard-status"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          return
-        }
+        var data = root.parseJson(text)
+        if (!data) return
         root.statusText = data.text || ""
         root.statusTooltip = data.tooltip || "WireGuard VPN"
         root.vpnActive = data.class === "active"
-        root.hasProfile = data.hasProfile !== false
+        // Only swap the array when something actually changed: the profile
+        // rows are a Repeater over it, and rebuilding them every 5s would
+        // reset hover state and anything else a row holds.
+        var next = Array.isArray(data.profiles) ? data.profiles : []
+        var nextJson = JSON.stringify(next)
+        if (nextJson !== root.profilesJson) {
+          root.profilesJson = nextJson
+          root.profiles = next
+        }
+        root.statusLoaded = true
+      }
+    }
+    onExited: {
+      if (root.statusPending) {
+        root.statusPending = false
+        running = true
       }
     }
   }
@@ -64,30 +94,103 @@ BarWidget {
     onTriggered: root.refreshStatus()
   }
 
-  // toggleVpn() used to fire-and-forget the toggle script via bar.run()
-  // (untrackable -- Bar.run() is Util.execDetached(), no completion signal)
-  // and then just restart the 5s status timer, meaning the toggle visibly
-  // lagged by up to 5s after nmcli itself had already finished. Running
-  // the script through our own Process instead gives a real completion
-  // signal (stdout closes once nmcli connection up/down returns, which
-  // itself blocks until the change has landed), so the toggle and details
-  // refresh fire right when the state actually changed, not on a timer.
+  // ---- Connect / disconnect ----
+  // Run through our own Process rather than bar.run() (fire-and-forget,
+  // no completion signal): wireguard-toggle's nmcli up/down blocks until
+  // the change has landed, so the switch and details refresh fire right
+  // when the state actually changed, not on a timer.
+  property string busyUuid: ""
+  property string actionError: ""
+
+  function setProfileActive(uuid, up) {
+    if (toggleProc.running) return
+    root.actionError = ""
+    root.busyUuid = uuid
+    if (up) root.selectedUuid = uuid
+    toggleProc.command = [root.scriptDir + "wireguard-toggle", uuid, up ? "up" : "down"]
+    toggleProc.running = true
+  }
+
   Process {
     id: toggleProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-toggle"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        root.busyUuid = ""
+        var data = root.parseJson(text)
+        if (!data || !data.ok) root.actionError = (data && data.error) || "connect/disconnect failed"
         root.refreshStatus()
         if (root.popupOpen) root.refreshDetails()
       }
     }
   }
 
+  // ---- Autoconnect ----
+  // NetworkManager acts on autoconnect=yes right away, so switching it on
+  // can also bring a profile up (unless it was disconnected by hand since
+  // the last boot); switching it off never drops a connected tunnel.
+  //
+  // The switch shows the requested value while the change is in flight and
+  // the new value is written into `profiles` once it succeeds, so the knob
+  // doesn't snap back for the moment until the next status read lands.
+  property string autoconnectBusyUuid: ""
+  property bool autoconnectTarget: false
+
+  function setProfileAutoconnect(uuid, on) {
+    if (autoconnectProc.running) return
+    root.actionError = ""
+    root.autoconnectBusyUuid = uuid
+    root.autoconnectTarget = on
+    autoconnectProc.command = [root.scriptDir + "wireguard-autoconnect", uuid, on ? "yes" : "no"]
+    autoconnectProc.running = true
+  }
+
+  Process {
+    id: autoconnectProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var uuid = root.autoconnectBusyUuid
+        var data = root.parseJson(text)
+        if (data && data.ok) {
+          root.profiles = root.profiles.map(function(p) {
+            return p.uuid === uuid ? Object.assign({}, p, { autoconnect: root.autoconnectTarget }) : p
+          })
+        } else {
+          root.actionError = (data && data.error) || "changing autoconnect failed"
+        }
+        root.autoconnectBusyUuid = ""
+        root.refreshStatus()
+      }
+    }
+  }
+
+  // ---- Which connected profile the details grid describes ----
+  // The one picked by clicking its name, if it's connected; otherwise the
+  // first connected profile. Only matters when more than one tunnel is up.
+  property string selectedUuid: ""
+  readonly property var activeProfiles: profiles.filter(function(p) { return p.active === true })
+  readonly property var detailsProfile: {
+    for (var i = 0; i < activeProfiles.length; i++) {
+      if (activeProfiles[i].uuid === selectedUuid) return activeProfiles[i]
+    }
+    return activeProfiles.length > 0 ? activeProfiles[0] : null
+  }
+  readonly property string detailsUuid: detailsProfile ? detailsProfile.uuid : ""
+  readonly property string detailsIface: detailsProfile ? (detailsProfile.device || "") : ""
+
+  onDetailsIfaceChanged: {
+    resetDetails()
+    if (popupOpen && detailsIface !== "") {
+      refreshDetails()
+      refreshPing()
+    }
+  }
+
   // ---- Detail panel ----
   property bool popupOpen: false
-  property var details: ({})  // { connected, ip, endpoint, rx_bytes, tx_bytes }
-  readonly property bool connected: details.connected === true
+  property var details: ({})  // { iface, connected, ip, endpoint, rx_bytes, tx_bytes }
+  readonly property bool connected: detailsIface !== "" && details.connected === true
 
   property real prevRxBytes: 0
   property real prevTxBytes: 0
@@ -131,26 +234,38 @@ BarWidget {
 
   onPopupOpenChanged: {
     if (popupOpen) {
-      prevSampleTime = 0
-      downloadRate = 0
-      uploadRate = 0
-      pingSamples = []
-      refreshDetails()
-      refreshPing()
-      if (!root.hasProfile) {
-        root.browseDir = Quickshell.env("HOME")
-        root.importError = ""
-        root.refreshBrowse()
+      resetDetails()
+      root.actionError = ""
+      root.refreshStatus()
+      if (root.detailsIface !== "") {
+        refreshDetails()
+        refreshPing()
       }
+      if (root.showImport) root.startBrowse()
+    } else {
+      // Reopening always starts from the plain profile list.
+      root.renamingUuid = ""
+      root.confirmRemoveUuid = ""
+      root.adding = false
+      root.pendingImportPath = ""
+      root.importError = ""
     }
   }
 
+  function resetDetails() {
+    details = ({})
+    prevSampleTime = 0
+    downloadRate = 0
+    uploadRate = 0
+    pingSamples = []
+  }
+
   function refreshDetails() {
-    if (!detailsProc.running) detailsProc.running = true
+    if (detailsIface !== "" && !detailsProc.running) detailsProc.running = true
   }
 
   function refreshPing() {
-    if (!pingProc.running) pingProc.running = true
+    if (detailsIface !== "" && !pingProc.running) pingProc.running = true
   }
 
   function updateThroughput(next) {
@@ -190,27 +305,27 @@ BarWidget {
   // Text elements below default to Text.AutoText, which sniffs a string
   // for HTML-looking content and, if it matches, renders it as rich text
   // (including fetching any <img src="..."> it finds). Filenames, paths,
-  // and error/endpoint strings ultimately come from the filesystem or from
-  // a peer's own .conf, so they're not something to trust as markup --
-  // this drops the one character (`<`) that triggers that sniff, for the
-  // handful of strings that get displayed through a shared component
-  // (Button) that doesn't expose a textFormat override.
+  // profile names and error/endpoint strings ultimately come from the
+  // filesystem, from a peer's own .conf or from the user, so they're not
+  // something to trust as markup -- this drops the one character (`<`)
+  // that triggers that sniff, for the handful of strings that get displayed
+  // through a shared component (Button, ConfirmDialog) that doesn't expose
+  // a textFormat override.
   function plainText(s) {
     return String(s === undefined || s === null ? "" : s).replace(/</g, "‹")
   }
 
   Process {
     id: detailsProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-details"]
+    command: [root.scriptDir + "wireguard-details", root.detailsIface, root.detailsUuid]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          return
-        }
+        var data = root.parseJson(text)
+        // A poll started for a profile the panel has since switched away
+        // from would otherwise feed the old tunnel's byte counters into the
+        // new one's throughput math.
+        if (!data || data.iface !== root.detailsIface) return
         root.details = data
         root.updateThroughput(data)
       }
@@ -220,23 +335,19 @@ BarWidget {
   Timer {
     id: detailsRefreshTimer
     interval: 1500
-    running: root.popupOpen
+    running: root.popupOpen && root.detailsIface !== ""
     repeat: true
     onTriggered: root.refreshDetails()
   }
 
   Process {
     id: pingProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-ping"]
+    command: [root.scriptDir + "wireguard-ping", root.detailsIface]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          return
-        }
+        var data = root.parseJson(text)
+        if (!data || data.iface !== root.detailsIface) return
         var next = root.pingSamples.concat([{ ok: data.ok === true, ms: data.ms || -1 }])
         if (next.length > root.pingWindow) next = next.slice(next.length - root.pingWindow)
         root.pingSamples = next
@@ -247,58 +358,122 @@ BarWidget {
   Timer {
     id: pingRefreshTimer
     interval: 3000
-    running: root.popupOpen
+    running: root.popupOpen && root.detailsIface !== ""
     repeat: true
     triggeredOnStart: false
     onTriggered: root.refreshPing()
   }
 
-  // ---- Remove the wg0 profile ----
-  property bool confirmRemoveOpen: false
-  property string removeError: ""
+  // ---- Rename ----
+  // Only the display name (connection.id) changes; the kernel interface
+  // keeps its name, so renaming a connected profile doesn't drop it.
+  property string renamingUuid: ""
+  property string renamingFrom: ""
 
-  function removeProfile() {
-    if (!removeProc.running) removeProc.running = true
+  function startRename(profile) {
+    root.actionError = ""
+    root.renamingUuid = profile.uuid
+    root.renamingFrom = profile.name
+    Qt.callLater(function() {
+      renameField.text = profile.name
+      renameField.selectAll()
+      renameField.forceActiveFocus()
+    })
+  }
+
+  function cancelRename() {
+    root.renamingUuid = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function commitRename() {
+    if (renameProc.running) return
+    var name = renameField.text.trim()
+    if (name === "") {
+      root.actionError = "Names must be 1-64 characters."
+      return
+    }
+    if (name === root.renamingFrom) {
+      root.cancelRename()
+      return
+    }
+    root.actionError = ""
+    renameProc.command = [root.scriptDir + "wireguard-rename", root.renamingUuid, name]
+    renameProc.running = true
   }
 
   Process {
-    id: removeProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-remove"]
+    id: renameProc
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          return
-        }
-        if (data.ok) {
-          root.removeError = ""
-          // hasProfile is derived live from nmcli by wireguard-status, not
-          // set optimistically here -- this just asks for a fresh read
-          // right away instead of waiting out the 5s poll interval.
+        var data = root.parseJson(text)
+        if (data && data.ok) {
+          root.cancelRename()
           root.refreshStatus()
         } else {
-          root.removeError = data.error || "remove failed"
+          root.actionError = (data && data.error) || "rename failed"
         }
       }
     }
   }
 
-  // ---- "No profile yet" import browser ----
-  // Only relevant while !hasProfile. A plain in-panel directory listing
-  // (dirs first, then *.conf files) rather than a native file dialog --
-  // Quickshell's layer-shell panels don't have one, and this keeps the
-  // plugin dependency-free (no zenity/kdialog/portal requirement).
+  // ---- Remove a profile ----
+  property string confirmRemoveUuid: ""
+  property string confirmRemoveName: ""
+
+  function askRemove(profile) {
+    root.actionError = ""
+    root.confirmRemoveName = profile.name
+    root.confirmRemoveUuid = profile.uuid
+  }
+
+  function removeProfile(uuid) {
+    if (removeProc.running) return
+    removeProc.command = [root.scriptDir + "wireguard-remove", uuid]
+    removeProc.running = true
+  }
+
+  Process {
+    id: removeProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var data = root.parseJson(text)
+        if (data && data.ok) {
+          root.actionError = ""
+          // The profile list is derived live from nmcli by wireguard-status,
+          // not edited optimistically here -- this just asks for a fresh
+          // read right away instead of waiting out the 5s poll interval.
+          root.refreshStatus()
+        } else {
+          root.actionError = (data && data.error) || "remove failed"
+        }
+      }
+    }
+  }
+
+  // ---- Add a profile: pick a .conf, then name it ----
+  // Shown on demand via "Add profile", and automatically when there are no
+  // profiles at all. A plain in-panel directory listing rather than a
+  // native file dialog -- Quickshell's layer-shell panels don't have one,
+  // and this keeps the plugin dependency-free (no zenity/kdialog/portal).
+  property bool adding: false
+  readonly property bool showImport: adding || (statusLoaded && !hasProfile)
+
+  onShowImportChanged: if (showImport && popupOpen) startBrowse()
+
   property string browseDir: Quickshell.env("HOME")
   property string browseParent: ""
   property var browseDirs: []
   property var browseFiles: []
+  // Full path of the .conf picked in the browser; non-empty switches the
+  // import section from browsing to the "name it" step.
+  property string pendingImportPath: ""
   property bool importing: false
   property string importError: ""
   // Off by default -- this plugin is built around a manual connect/disconnect
-  // toggle, so a profile silently coming up on every boot would be
+  // switch, so a profile silently coming up on every boot would be
   // surprising unless someone opts in for this particular import.
   property bool importAutoconnect: false
 
@@ -307,6 +482,26 @@ BarWidget {
     for (var i = 0; i < browseDirs.length; i++) out.push({ name: browseDirs[i], kind: "dir" })
     for (var j = 0; j < browseFiles.length; j++) out.push({ name: browseFiles[j], kind: "file" })
     return out
+  }
+
+  function startAdding() {
+    root.actionError = ""
+    root.renamingUuid = ""
+    root.adding = true
+  }
+
+  function cancelAdding() {
+    root.adding = false
+    root.pendingImportPath = ""
+    root.importError = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function startBrowse() {
+    root.pendingImportPath = ""
+    root.importError = ""
+    root.importAutoconnect = false
+    root.navigateTo(Quickshell.env("HOME"))
   }
 
   function refreshBrowse() {
@@ -318,30 +513,49 @@ BarWidget {
     root.refreshBrowse()
   }
 
-  function importFile(fileName) {
-    if (importProc.running) return
+  function pickFile(fileName) {
+    root.importError = ""
+    root.pendingImportPath = root.browseDir + "/" + fileName
+    var suggested = fileName.replace(/\.conf$/i, "")
+    Qt.callLater(function() {
+      importNameField.text = suggested
+      importNameField.selectAll()
+      importNameField.forceActiveFocus()
+    })
+  }
+
+  function backToBrowse() {
+    root.pendingImportPath = ""
+    root.importError = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function commitImport() {
+    if (importProc.running || root.pendingImportPath === "") return
+    var name = importNameField.text.trim()
+    if (name === "") {
+      root.importError = "Give the profile a name."
+      return
+    }
     root.importing = true
     root.importError = ""
     importProc.command = [
-      Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-import",
-      root.browseDir + "/" + fileName,
-      root.importAutoconnect ? "yes" : "no"
+      root.scriptDir + "wireguard-import",
+      root.pendingImportPath,
+      root.importAutoconnect ? "yes" : "no",
+      name
     ]
     importProc.running = true
   }
 
   Process {
     id: browseProc
-    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/remco.wireguard/scripts/wireguard-browse", root.browseDir]
+    command: [root.scriptDir + "wireguard-browse", root.browseDir]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          return
-        }
+        var data = root.parseJson(text)
+        if (!data) return
         root.browseDir = data.dir || root.browseDir
         root.browseParent = data.parent || ""
         root.browseDirs = data.dirs || []
@@ -356,21 +570,26 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: {
         root.importing = false
-        let data
-        try {
-          data = JSON.parse(text || "{}")
-        } catch (e) {
-          data = { ok: false, error: "unknown error" }
-        }
+        var data = root.parseJson(text) || { ok: false, error: "unknown error" }
         if (data.ok) {
-          root.importError = ""
+          if (data.uuid) root.selectedUuid = data.uuid
+          root.cancelAdding()
           root.refreshStatus()
-          if (root.popupOpen) root.refreshDetails()
         } else {
           root.importError = data.error || "import failed"
         }
       }
     }
+  }
+
+  // Escape steps back one level at a time: dialog, then an open editor,
+  // then the import flow, and only then closes the panel.
+  function handleEscape() {
+    if (root.confirmRemoveUuid !== "") root.confirmRemoveUuid = ""
+    else if (root.renamingUuid !== "") root.cancelRename()
+    else if (root.pendingImportPath !== "") root.backToBrowse()
+    else if (root.adding && root.hasProfile) root.cancelAdding()
+    else root.close()
   }
 
   visible: statusText !== ""
@@ -389,25 +608,37 @@ BarWidget {
     onPressed: root.togglePopup()
   }
 
-  PopupCard {
+  // KeyboardPanel rather than PopupCard: the rename and import-name fields
+  // need keyboard input, and an xdg-popup only receives keys after focus
+  // has been routed to it through its parent surface.
+  KeyboardPanel {
     id: popup
     anchorItem: button
     bar: root.bar
     owner: root
     open: root.popupOpen
+    focusTarget: keyCatcher
     contentWidth: popup.fittedContentWidth(Style.space(380))
-    // Floored at Style.space(230): the ConfirmDialog below is a sibling of
-    // `column`, sharing this same fixed-size popup window, but its centered
-    // card isn't part of `column`'s implicitHeight at all. In the
-    // disconnected-with-profile state -- just the hero row plus the Remove
-    // profile link, nothing else visible -- `column` alone is short enough
-    // that the window sized to fit only it left no room for the dialog's
-    // card, which got silently clipped by the window's real edges rather
-    // than visually overflowing (a PopupWindow is its own fixed-size
-    // Wayland surface, not a clipped-but-present Item). The floor is sized
-    // for the dialog's message + button row regardless of which state
-    // triggered it.
-    contentHeight: popup.fittedContentHeight(Math.max(column.implicitHeight, Style.space(230)))
+    // While the remove dialog is up, floored at Style.space(230): the
+    // ConfirmDialog is a sibling of `column`, centered over the card, but
+    // isn't part of `column`'s implicitHeight -- with only a profile or two
+    // listed the card would be too short to hold the dialog's message and
+    // button row.
+    contentHeight: popup.fittedContentHeight(Math.max(column.implicitHeight, root.confirmRemoveUuid !== "" ? Style.space(230) : 0))
+
+    Item {
+      id: keyCatcher
+      anchors.fill: parent
+      focus: true
+      Keys.onPressed: function(event) {
+        if (removeDialog.handleKey(event)) {
+          event.accepted = true
+        } else if (event.key === Qt.Key_Escape) {
+          root.handleEscape()
+          event.accepted = true
+        }
+      }
+    }
 
     Column {
       id: column
@@ -416,10 +647,10 @@ BarWidget {
       anchors.top: parent.top
       spacing: Style.space(12)
 
-      // ---------- Hero: icon · name + status · toggle ----------
+      // ---------- Hero: icon · connected profile + status ----------
       Item {
         width: parent.width
-        implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, heroToggle.implicitHeight)
+        implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
 
         Text {
           id: heroIcon
@@ -432,28 +663,17 @@ BarWidget {
           textFormat: Text.PlainText
         }
 
-        ToggleSwitch {
-          id: heroToggle
-          visible: root.hasProfile
-          checked: root.vpnActive
-          foreground: root.bar.foreground
-          anchors.right: parent.right
-          anchors.verticalCenter: parent.verticalCenter
-          onToggled: root.toggleVpn()
-        }
-
         Column {
           id: heroLabels
           anchors.left: heroIcon.right
           anchors.leftMargin: Style.space(14)
-          anchors.right: heroToggle.left
-          anchors.rightMargin: Style.space(12)
+          anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
           spacing: Style.space(2)
 
           Text {
             width: parent.width
-            text: "WireGuard"
+            text: root.detailsProfile ? root.detailsProfile.name : "WireGuard"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.title
@@ -464,7 +684,10 @@ BarWidget {
 
           Text {
             width: parent.width
-            text: !root.hasProfile ? "NO PROFILE" : (root.connected ? "CONNECTED" : "NOT CONNECTED")
+            text: !root.hasProfile ? "NO PROFILE"
+              : root.activeProfiles.length > 1 ? "CONNECTED · " + root.activeProfiles.length + " TUNNELS"
+              : root.detailsProfile ? "CONNECTED"
+              : "NOT CONNECTED"
             color: Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -478,7 +701,7 @@ BarWidget {
 
       // ---------- Connection details ----------
       GridLayout {
-        visible: root.connected
+        visible: root.connected && !root.showImport
         width: parent.width
         columns: 4
         columnSpacing: Style.space(20)
@@ -510,7 +733,7 @@ BarWidget {
       // the 4-column grid above -- "host:port" endpoints run long enough to
       // get badly truncated squeezed into a quarter-width cell.
       Column {
-        visible: root.connected
+        visible: root.connected && !root.showImport
         width: parent.width
         spacing: Style.spacing.labelGap
 
@@ -531,86 +754,231 @@ BarWidget {
         }
       }
 
-      // ---------- Remove profile ----------
-      // Visible whenever a profile exists, connected or not -- this is an
-      // escape hatch for "wrong file" or "start over", not tied to being
-      // connected. Text-link styling (not a full Button) so it reads as a
-      // secondary, deliberate action rather than competing with the
-      // primary connect toggle above.
-      Item {
-        visible: root.hasProfile
+      // ---------- Profiles ----------
+      Column {
+        visible: root.hasProfile && !root.showImport
         width: parent.width
-        implicitHeight: removeLink.implicitHeight
+        spacing: Style.space(10)
 
-        Text {
-          id: removeLink
-          anchors.right: parent.right
-          text: "Remove profile"
-          color: root.bar.urgent
-          opacity: removeMouse.containsMouse ? 1.0 : 0.6
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          textFormat: Text.PlainText
+        SectionLabel { text: "PROFILES" }
 
-          MouseArea {
-            id: removeMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.confirmRemoveOpen = true
+        Repeater {
+          model: root.profiles
+
+          delegate: Item {
+            id: row
+            required property var modelData
+            readonly property bool isActive: modelData.active === true
+            // Switching autoconnect on can start an activation, so the
+            // connect switch holds off while that change is in flight too.
+            readonly property bool autoconnectBusy: root.autoconnectBusyUuid === modelData.uuid
+            readonly property bool autoconnectOn: autoconnectBusy ? root.autoconnectTarget : modelData.autoconnect === true
+            readonly property bool isBusy: root.busyUuid === modelData.uuid || (autoconnectBusy && root.autoconnectTarget)
+              || modelData.state === "activating" || modelData.state === "deactivating"
+            // Marks which tunnel the details above describe, but only when
+            // there's more than one to choose between.
+            readonly property bool isShown: root.activeProfiles.length > 1 && root.detailsUuid === modelData.uuid
+
+            width: parent ? parent.width : 0
+            implicitHeight: Math.max(rowLabels.implicitHeight, rowToggle.implicitHeight)
+
+            ToggleSwitch {
+              id: rowToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              checked: row.isActive
+              busy: row.isBusy
+              foreground: root.bar.foreground
+              onToggled: root.setProfileActive(row.modelData.uuid, !row.isActive)
+            }
+
+            Column {
+              id: rowLabels
+              anchors.left: parent.left
+              anchors.right: rowToggle.left
+              anchors.rightMargin: Style.space(12)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Text {
+                width: parent.width
+                text: (row.isShown ? "› " : "") + row.modelData.name
+                color: root.bar.foreground
+                opacity: row.isActive ? 1.0 : 0.8
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: row.isActive
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+
+                MouseArea {
+                  anchors.fill: parent
+                  enabled: row.isActive && root.activeProfiles.length > 1
+                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.selectedUuid = row.modelData.uuid
+                }
+              }
+
+              Row {
+                spacing: Style.space(12)
+
+                Text {
+                  text: row.isBusy ? "WORKING…" : row.isActive ? "CONNECTED" : "OFF"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                  textFormat: Text.PlainText
+                }
+
+                LinkText {
+                  text: "Rename"
+                  onClicked: root.startRename(row.modelData)
+                }
+
+                LinkText {
+                  text: "Remove"
+                  urgent: true
+                  onClicked: root.askRemove(row.modelData)
+                }
+              }
+
+              // A compact switch sized off its caption, like the network
+              // panel's "AUTOMATIC" band switch. Not a Row: the switch is
+              // shifted left by its hover-ring padding so the track lines up
+              // with the text above it.
+              Item {
+                implicitWidth: autoconnectSwitch.width - autoconnectSwitch.cursorPad + Style.space(6) + autoconnectLabel.implicitWidth
+                implicitHeight: Math.max(autoconnectSwitch.implicitHeight, autoconnectLabel.implicitHeight)
+
+                ToggleSwitch {
+                  id: autoconnectSwitch
+                  x: -cursorPad
+                  anchors.verticalCenter: parent.verticalCenter
+                  trackHeight: Math.round(autoconnectLabel.font.pixelSize * 1.2)
+                  cursorPad: Style.space(3)
+                  checked: row.autoconnectOn
+                  busy: row.autoconnectBusy
+                  foreground: root.bar.foreground
+                  onToggled: root.setProfileAutoconnect(row.modelData.uuid, !row.autoconnectOn)
+
+                  PanelToolTip {
+                    visible: autoconnectSwitch.containsMouse || autoconnectLabelMouse.containsMouse
+                    text: row.autoconnectOn
+                      ? (row.isActive ? "Stop connecting automatically. Stays connected for now." : "Stop connecting automatically.")
+                      : (row.isActive ? "Connect automatically, e.g. at startup." : "Connect automatically, e.g. at startup. May also connect it right away.")
+                    fontFamily: root.bar.fontFamily
+                  }
+                }
+
+                Text {
+                  id: autoconnectLabel
+                  anchors.left: autoconnectSwitch.right
+                  anchors.leftMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "AUTOCONNECT"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  opacity: row.autoconnectOn ? 1.0 : 0.7
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                  textFormat: Text.PlainText
+
+                  MouseArea {
+                    id: autoconnectLabelMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: if (!row.autoconnectBusy) root.setProfileAutoconnect(row.modelData.uuid, !row.autoconnectOn)
+                  }
+                }
+              }
+            }
           }
         }
       }
 
-      Text {
-        visible: root.removeError !== ""
+      // ---------- Rename editor ----------
+      // Lives outside the Repeater on purpose: a status poll that changes
+      // any profile rebuilds every row, which would throw away a half-typed
+      // name and the field's focus along with it.
+      Column {
+        visible: root.renamingUuid !== "" && !root.showImport
         width: parent.width
-        text: root.removeError
-        color: root.bar.urgent
-        wrapMode: Text.WordWrap
-        font.family: root.bar.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        textFormat: Text.PlainText
+        spacing: Style.space(6)
+
+        InfoLabel {
+          width: parent.width
+          text: "Rename “" + root.renamingFrom + "” to:"
+          elide: Text.ElideRight
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          TextField {
+            id: renameField
+            width: parent.width - renameSave.width - renameCancel.width - parent.spacing * 2
+            anchors.verticalCenter: parent.verticalCenter
+            foreground: root.bar.foreground
+            font.pixelSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlGap
+            verticalPadding: Style.spacing.controlPaddingY
+            maximumLength: 64
+            enabled: !renameProc.running
+            onAccepted: root.commitRename()
+            Keys.onEscapePressed: root.handleEscape()
+          }
+
+          Button {
+            id: renameSave
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Save"
+            fontSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            onClicked: root.commitRename()
+          }
+
+          Button {
+            id: renameCancel
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Cancel"
+            fontSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            onClicked: root.cancelRename()
+          }
+        }
       }
 
-      // ---------- No profile yet: pick a .conf to import ----------
-      // Plain in-panel directory listing rather than a native file dialog --
-      // Quickshell's layer-shell panels don't have one available, and this
-      // keeps the plugin dependency-free (no zenity/kdialog/portal needed).
+      ErrorText {
+        visible: root.actionError !== "" && !root.showImport
+        text: root.actionError
+      }
+
+      LinkText {
+        visible: root.hasProfile && !root.showImport
+        text: "+ Add profile"
+        onClicked: root.startAdding()
+      }
+
+      // ---------- Add a profile ----------
       Column {
-        visible: !root.hasProfile
+        visible: root.showImport
         width: parent.width
         spacing: Style.space(8)
 
-        Text {
-          width: parent.width
-          text: "Choose a WireGuard .conf file to import:"
-          color: root.bar.foreground
-          opacity: 0.8
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
-          textFormat: Text.PlainText
-        }
-
-        // Applies to the profile this import creates, not a global setting --
-        // nmcli's own import default is autoconnect=yes, which would
-        // otherwise bring the tunnel up on every boot with no prompt.
-        Row {
+        // Step 1: browse to a .conf file.
+        Column {
+          visible: root.pendingImportPath === ""
           width: parent.width
           spacing: Style.space(8)
 
-          ToggleSwitch {
-            id: autoconnectToggle
-            checked: root.importAutoconnect
-            anchors.verticalCenter: parent.verticalCenter
-            onToggled: root.importAutoconnect = !root.importAutoconnect
-          }
-
           Text {
-            width: parent.width - autoconnectToggle.width - parent.spacing
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Connect automatically at startup"
+            width: parent.width
+            text: root.hasProfile ? "Choose a WireGuard .conf file to add:" : "Choose a WireGuard .conf file to import:"
             color: root.bar.foreground
             opacity: 0.8
             font.family: root.bar.fontFamily
@@ -618,69 +986,160 @@ BarWidget {
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
           }
-        }
 
-        Row {
-          width: parent.width
-          spacing: Style.space(8)
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
 
-          Button {
-            text: ".. (up)"
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            enabled: root.browseParent !== ""
-            opacity: enabled ? 1.0 : 0.4
-            onClicked: root.navigateTo(root.browseParent)
+            Button {
+              text: ".. (up)"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              enabled: root.browseParent !== ""
+              opacity: enabled ? 1.0 : 0.4
+              onClicked: root.navigateTo(root.browseParent)
+            }
+
+            Text {
+              width: parent.width - Style.space(90)
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.browseDir
+              color: root.bar.foreground
+              opacity: 0.6
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideMiddle
+              textFormat: Text.PlainText
+            }
+          }
+
+          ListView {
+            id: browseList
+            width: parent.width
+            height: Math.min(Math.max(root.browseEntries.length, 1) * Style.space(30), Style.space(180))
+            clip: true
+            visible: root.browseEntries.length > 0
+            model: root.browseEntries.length
+
+            delegate: Button {
+              id: entryButton
+              required property int index
+              readonly property var entry: root.browseEntries[index]
+
+              width: browseList.width
+              leftAlign: true
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              text: entry ? root.plainText(entry.kind === "dir" ? entry.name + "/" : entry.name) : ""
+              onClicked: {
+                if (!entry) return
+                if (entry.kind === "dir") root.navigateTo(root.browseDir + "/" + entry.name)
+                else root.pickFile(entry.name)
+              }
+            }
           }
 
           Text {
-            width: parent.width - Style.space(90)
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.browseDir
+            visible: root.browseEntries.length === 0
+            width: parent.width
+            text: "No folders or .conf files found."
             color: root.bar.foreground
-            opacity: 0.6
+            opacity: 0.5
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideMiddle
             textFormat: Text.PlainText
           }
-        }
 
-        ListView {
-          id: browseList
-          width: parent.width
-          height: Math.min(Math.max(root.browseEntries.length, 1) * Style.space(30), Style.space(180))
-          clip: true
-          visible: root.browseEntries.length > 0
-          model: root.browseEntries.length
-
-          delegate: Button {
-            id: entryButton
-            required property int index
-            readonly property var entry: root.browseEntries[index]
-
-            width: browseList.width
-            leftAlign: true
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            text: entry ? root.plainText(entry.kind === "dir" ? entry.name + "/" : entry.name) : ""
-            onClicked: {
-              if (!entry) return
-              if (entry.kind === "dir") root.navigateTo(root.browseDir + "/" + entry.name)
-              else root.importFile(entry.name)
-            }
+          LinkText {
+            visible: root.hasProfile
+            text: "Cancel"
+            onClicked: root.cancelAdding()
           }
         }
 
-        Text {
-          visible: root.browseEntries.length === 0
+        // Step 2: name the profile, then import.
+        Column {
+          visible: root.pendingImportPath !== ""
           width: parent.width
-          text: "No folders or .conf files found."
-          color: root.bar.foreground
-          opacity: 0.5
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          textFormat: Text.PlainText
+          spacing: Style.space(8)
+
+          InfoLabel {
+            width: parent.width
+            text: root.pendingImportPath
+            elide: Text.ElideMiddle
+          }
+
+          Text {
+            width: parent.width
+            text: "Name for this profile:"
+            color: root.bar.foreground
+            opacity: 0.8
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+          }
+
+          TextField {
+            id: importNameField
+            width: parent.width
+            foreground: root.bar.foreground
+            font.pixelSize: Style.font.bodySmall
+            horizontalPadding: Style.spacing.controlGap
+            verticalPadding: Style.spacing.controlPaddingY
+            maximumLength: 64
+            placeholderText: "e.g. Home, Office, Buenos Aires"
+            enabled: !root.importing
+            onAccepted: root.commitImport()
+            Keys.onEscapePressed: root.handleEscape()
+          }
+
+          // Applies to the profile this import creates, not a global setting --
+          // nmcli's own import default is autoconnect=yes, which would
+          // otherwise bring the tunnel up on every boot with no prompt.
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            ToggleSwitch {
+              id: autoconnectToggle
+              checked: root.importAutoconnect
+              foreground: root.bar.foreground
+              anchors.verticalCenter: parent.verticalCenter
+              onToggled: root.importAutoconnect = !root.importAutoconnect
+            }
+
+            Text {
+              width: parent.width - autoconnectToggle.width - parent.spacing
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Connect automatically at startup"
+              color: root.bar.foreground
+              opacity: 0.8
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+              textFormat: Text.PlainText
+            }
+          }
+
+          Row {
+            spacing: Style.space(6)
+
+            Button {
+              text: "Import"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              enabled: !root.importing
+              onClicked: root.commitImport()
+            }
+
+            Button {
+              text: "Back"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              enabled: !root.importing
+              onClicked: root.backToBrowse()
+            }
+          }
         }
 
         Text {
@@ -694,29 +1153,25 @@ BarWidget {
           textFormat: Text.PlainText
         }
 
-        Text {
+        ErrorText {
           visible: root.importError !== ""
-          width: parent.width
           text: root.importError
-          color: root.bar.urgent
-          wrapMode: Text.WordWrap
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          textFormat: Text.PlainText
         }
       }
     }
 
     ConfirmDialog {
+      id: removeDialog
       anchors.fill: parent
-      opened: root.confirmRemoveOpen
+      opened: root.confirmRemoveUuid !== ""
       z: 10
-      message: "Remove this WireGuard profile? You'll need to re-import the .conf file to reconnect."
+      message: "Remove “" + root.plainText(root.confirmRemoveName) + "”? You'll need to re-import its .conf file to use it again."
       confirmText: "Remove"
-      onCanceled: root.confirmRemoveOpen = false
+      onCanceled: root.confirmRemoveUuid = ""
       onConfirmed: {
-        root.confirmRemoveOpen = false
-        root.removeProfile()
+        var uuid = root.confirmRemoveUuid
+        root.confirmRemoveUuid = ""
+        root.removeProfile(uuid)
       }
     }
   }
@@ -737,5 +1192,46 @@ BarWidget {
     horizontalAlignment: Text.AlignRight
     elide: Text.ElideRight
     textFormat: Text.PlainText
+  }
+
+  component SectionLabel: Text {
+    color: Qt.darker(root.bar.foreground, 1.4)
+    font.family: root.bar.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    font.letterSpacing: 1.2
+    textFormat: Text.PlainText
+  }
+
+  component ErrorText: Text {
+    width: parent ? parent.width : 0
+    color: root.bar.urgent
+    wrapMode: Text.WordWrap
+    font.family: root.bar.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    textFormat: Text.PlainText
+  }
+
+  // Text-link styling (not a full Button) for secondary actions, so they
+  // read as deliberate extras rather than competing with the connect
+  // switches.
+  component LinkText: Text {
+    id: link
+    property bool urgent: false
+    signal clicked()
+
+    color: urgent ? root.bar.urgent : root.bar.foreground
+    opacity: linkMouse.containsMouse ? 1.0 : 0.6
+    font.family: root.bar.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    textFormat: Text.PlainText
+
+    MouseArea {
+      id: linkMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: link.clicked()
+    }
   }
 }

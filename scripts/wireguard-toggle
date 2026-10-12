@@ -1,9 +1,21 @@
 #!/bin/bash
-# Click handler for the "wireguard" bar module (see shell.json onClick).
-state=$(nmcli -g GENERAL.STATE connection show wg0 2>/dev/null)
+# Brings one WireGuard profile up or down: wireguard-toggle <uuid> <up|down>.
+# Takes an explicit direction rather than flipping current state, so a
+# double-click or a stale panel can't end up doing the opposite of what the
+# switch showed. nmcli blocks until the change has landed, which is what
+# lets BarWidget.qml refresh right on completion instead of on a timer.
+set -o pipefail
+source "$(dirname -- "$0")/wireguard-common"
 
-if [[ "$state" == activated* ]]; then
-  nmcli connection down wg0
-else
-  nmcli connection up wg0
-fi
+uuid="$1"
+action="$2"
+
+[[ $action == up || $action == down ]] || fail "invalid action"
+is_wireguard_uuid "$uuid" || fail "profile not found"
+
+# Capped while the pipe is read, like wireguard-import: the error text
+# round-trips into the panel as-is.
+out=$(nmcli connection "$action" uuid "$uuid" 2>&1 | head -c 2000)
+(( $? == 0 )) || fail "$out"
+
+jq -nc '{ok:true}'

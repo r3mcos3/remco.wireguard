@@ -1,0 +1,18 @@
+#!/bin/bash
+# Renames a WireGuard profile: wireguard-rename <uuid> <new name>.
+#
+# Only connection.id (the name shown in the panel and in nmcli) changes.
+# The kernel interface name is left alone: it has much stricter rules (15
+# chars, no spaces) and changing it would drop a connected tunnel.
+source "$(dirname -- "$0")/wireguard-common"
+
+uuid="$1"
+name=$(trim "$2")
+
+is_wireguard_uuid "$uuid" || fail "profile not found"
+valid_name "$name" || fail "Names must be 1-64 characters."
+name_taken "$name" "$uuid" && fail "Another connection is already called \"$name\"."
+
+nmcli connection modify uuid "$uuid" connection.id "$name" >/dev/null 2>&1 || fail "rename failed"
+
+jq -nc '{ok:true}'

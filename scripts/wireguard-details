@@ -1,12 +1,17 @@
 #!/bin/bash
 # Polled by the WireGuard bar-widget panel while it's open (see BarWidget.qml
-# in ~/.config/omarchy/plugins/remco.wireguard/). Deliberately fast/cheap --
-# no ping here, that's a separate slower-cadence Process in the widget -- so
-# this can be polled every ~1.5s like the built-in network panel does.
-iface="wg0"
+# in ~/.config/omarchy/plugins/remco.wireguard/), for whichever connected
+# profile the panel is showing: wireguard-details <interface> <uuid>.
+# Deliberately fast/cheap -- no ping here, that's a separate slower-cadence
+# Process in the widget -- so this can be polled every ~1.5s like the
+# built-in network panel does.
+source "$(dirname -- "$0")/wireguard-common"
 
-if ! ip link show "$iface" &>/dev/null; then
-  echo '{"connected":false}'
+iface="$1"
+uuid="$2"
+
+if ! valid_iface "$iface" || ! ip link show "$iface" &>/dev/null; then
+  jq -nc --arg iface "$iface" '{iface: $iface, connected: false}'
   exit 0
 fi
 
@@ -18,13 +23,17 @@ ip_addr=$(ip -4 -o addr show "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -
 # the first peer's endpoint is meant to show, and a real host:port is well
 # under 200 bytes, so this both bounds the size and -- in practice -- stays
 # within the first peer's line for a many-peer config.
-endpoint=$(nmcli -g wireguard.peers connection show "$iface" 2>/dev/null | grep -oP 'endpoint=\K\S+' | tr -d '\\' | head -c 200)
+endpoint=""
+if is_wireguard_uuid "$uuid"; then
+  endpoint=$(nmcli -g wireguard.peers connection show uuid "$uuid" 2>/dev/null | grep -oP 'endpoint=\K\S+' | tr -d '\\' | head -c 200)
+fi
 rx_bytes=$(cat "/sys/class/net/$iface/statistics/rx_bytes" 2>/dev/null || echo 0)
 tx_bytes=$(cat "/sys/class/net/$iface/statistics/tx_bytes" 2>/dev/null || echo 0)
 
 jq -nc \
+  --arg iface "$iface" \
   --arg ip "${ip_addr:-}" \
   --arg endpoint "${endpoint:-}" \
   --argjson rx "${rx_bytes:-0}" \
   --argjson tx "${tx_bytes:-0}" \
-  '{connected: true, ip: $ip, endpoint: $endpoint, rx_bytes: $rx, tx_bytes: $tx}'
+  '{iface: $iface, connected: true, ip: $ip, endpoint: $endpoint, rx_bytes: $rx, tx_bytes: $tx}'

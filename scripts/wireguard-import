@@ -1,65 +1,72 @@
 #!/bin/bash
-# Imports a .conf file selected in the WireGuard panel's browser as the
-# "wg0" NetworkManager connection (see BarWidget.qml). nmcli names the
-# imported connection after the file's basename, so this renames it to
-# "wg0" afterwards to match what the rest of the plugin's scripts assume.
+# Imports a .conf file picked in the WireGuard panel's browser as a new
+# NetworkManager profile: wireguard-import <file> <yes|no autoconnect> <name>.
+# Prints {ok:true, uuid} or {ok:false, error}.
 #
 # pipefail so `$?` after an `out=$(cmd | head -c N)` capture still reflects
 # cmd's real exit status rather than head's (head virtually always exits
 # 0) -- needed everywhere below that caps a capture through a pipe.
 set -o pipefail
+source "$(dirname -- "$0")/wireguard-common"
+
 conf="$1"
 # Second arg is the panel's autoconnect toggle ("yes"/"no"); anything else
 # (missing, garbled) falls back to the safer "no" rather than silently
 # opting the profile into connecting on every boot.
 autoconnect="no"
 [[ "$2" == "yes" ]] && autoconnect="yes"
+name=$(trim "$3")
 
-if [[ ! -f "$conf" ]]; then
-  jq -nc '{ok:false, error:"file not found"}'
-  exit 0
-fi
+[[ -f "$conf" ]] || fail "file not found"
+# A real WireGuard config is well under 1 KB per peer.
+(( $(stat -c %s -- "$conf" 2>/dev/null || echo 0) <= 65536 )) || fail "file is too large to be a WireGuard config"
+valid_name "$name" || fail "Names must be 1-64 characters."
+name_taken "$name" "" && fail "Another connection is already called \"$name\"."
 
-if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
-  jq -nc '{ok:false, error:"a wg0 profile already exists"}'
-  exit 0
-fi
+# First wgN that no WireGuard profile already claims as its interface and
+# that isn't an existing kernel link.
+free_iface() {
+  local used=" " uuid type n
+  while IFS=: read -r uuid type; do
+    [[ $type == wireguard ]] || continue
+    used+="$(nmcli -g connection.interface-name connection show uuid "$uuid" 2>/dev/null) "
+  done < <(nmcli -t -f UUID,TYPE connection show 2>/dev/null)
+  for n in {0..99}; do
+    [[ $used == *" wg$n "* || -e /sys/class/net/wg$n ]] || { echo "wg$n"; return 0; }
+  done
+  return 1
+}
+
+# nmcli only imports a file called <interface>.conf, where <interface> is a
+# valid kernel interface name (15 chars max, no spaces), and it uses that
+# as both the new profile's name and its device name. So instead of
+# importing the picked file directly -- which fails for "My VPN.conf" and
+# makes two "wg0.conf" files fight over one device -- copy it under a free
+# wgN name into a private temp dir (it holds a private key), import that,
+# then set the display name the user chose.
+iface=$(free_iface) || fail "no free wgN interface name"
+tmp=$(mktemp -d) || fail "could not create a temp directory"
+trap 'rm -rf -- "$tmp"' EXIT
+install -m 600 -- "$conf" "$tmp/$iface.conf" 2>/dev/null || fail "could not read the file"
 
 # Capped while the pipe is read (head -c stops nmcli's writer with SIGPIPE
 # once 2000 bytes have passed through), not after a full-size capture --
 # nmcli's own output is normally a one-liner, but a hostile or corrupt
 # .conf could make it dump far more onto stderr, and that string
 # round-trips into the panel's error Text as-is.
-out=$(nmcli connection import type wireguard file "$conf" 2>&1 | head -c 2000)
-rc=$?
-if [[ $rc -ne 0 ]]; then
-  jq -nc --arg err "$out" '{ok:false, error:$err}'
-  exit 0
-fi
+out=$(nmcli connection import type wireguard file "$tmp/$iface.conf" 2>&1 | head -c 2000)
+(( $? == 0 )) || fail "$out"
 
-name=$(sed -nE "s/^Connection '([^']+)'.*/\1/p" <<<"$out")
-if [[ -z "$name" ]]; then
-  jq -nc --arg err "$out" '{ok:false, error:$err}'
-  exit 0
-fi
+uuid=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' <<<"$out" | head -n 1)
+[[ -n $uuid ]] || fail "$out"
 
-# nmcli names the imported connection (both its display id and its
-# connection.interface-name, i.e. the actual kernel device) after the
-# file's basename. The rest of this plugin's scripts assume a "wg0"
-# device, so both need renaming, not just the display id -- otherwise the
-# connection shows as active while wireguard-details/-ping look for a
-# "wg0" interface that was never actually created.
+# connection.autoconnect is set explicitly from the panel's toggle: nmcli's
+# own import default is "yes", which would otherwise bring the tunnel up
+# on every boot with no prompt unless the user opted in.
 #
-# connection.autoconnect also gets set explicitly here, from the panel's
-# toggle: nmcli's own import default is "yes", which would otherwise bring
-# the tunnel up on every boot with no prompt unless the user opted in.
-#
-# Output discarded on purpose: it fed straight into this script's own
-# stdout (which the QML StdioCollector reads as JSON) unbounded and
-# unused -- the fixed message below is all the panel ever needed to show.
-if ! nmcli connection modify "$name" connection.id wg0 connection.interface-name wg0 connection.autoconnect "$autoconnect" >/dev/null 2>&1; then
-  jq -nc '{ok:false, error:"import succeeded but renaming to wg0 failed"}'
-  exit 0
+# Output discarded on purpose: this script's stdout is read as JSON.
+if ! nmcli connection modify uuid "$uuid" connection.id "$name" connection.autoconnect "$autoconnect" >/dev/null 2>&1; then
+  fail "imported as \"$iface\", but setting its name failed"
 fi
 
 # `nmcli connection import` creates the profile with autoconnect=yes before
@@ -69,7 +76,7 @@ fi
 # autoconnect, explicitly bring it back down; best-effort, since it may
 # never actually have come up.
 if [[ "$autoconnect" == "no" ]]; then
-  nmcli connection down wg0 >/dev/null 2>&1 || true
+  nmcli connection down uuid "$uuid" >/dev/null 2>&1 || true
 fi
 
-jq -nc '{ok:true}'
+jq -nc --arg uuid "$uuid" '{ok:true, uuid:$uuid}'
