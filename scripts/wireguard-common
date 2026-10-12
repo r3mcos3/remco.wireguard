@@ -1,0 +1,54 @@
+#!/bin/bash
+# Shared helpers for the wireguard-* scripts. Sourced, never run directly.
+#
+# Every profile is addressed by its NetworkManager UUID rather than its
+# name: names are user-editable (wireguard-rename) and NetworkManager
+# doesn't require them to be unique, so a UUID is the only stable handle.
+
+# Prints the {ok:false, error} result BarWidget.qml expects and exits.
+fail() {
+  jq -nc --arg err "$1" '{ok:false, error:$err}'
+  exit 0
+}
+
+# True when $1 is the UUID of a WireGuard profile. Every script that acts on
+# a profile checks this first, so a stray UUID can never bring down, rename
+# or delete a Wi-Fi or Ethernet connection.
+is_wireguard_uuid() {
+  [[ -n $1 ]] && [[ $(nmcli -g connection.type connection show uuid "$1" 2>/dev/null) == wireguard ]]
+}
+
+# Strips leading/trailing whitespace from $1.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Display names are free-form (spaces, accents, emoji are fine) -- they're
+# only connection.id, not the kernel interface name -- but are kept to a
+# sane length and must not carry control characters.
+valid_name() {
+  [[ -n $1 && ${#1} -le 64 && $1 != *[[:cntrl:]]* ]]
+}
+
+# True when some profile other than UUID $2 is already called $1. Checked
+# across every NetworkManager profile, not just WireGuard ones, so
+# `nmcli connection up <name>` from a terminal stays unambiguous.
+#
+# --escape no keeps NAME verbatim; it's the last field, so `read` hands it
+# any colons it contains.
+name_taken() {
+  local name="$1" except="$2" uuid other
+  while IFS=: read -r uuid other; do
+    [[ $uuid != "$except" && $other == "$name" ]] && return 0
+  done < <(nmcli --escape no -t -f UUID,NAME connection show 2>/dev/null)
+  return 1
+}
+
+# Kernel interface names: 1-15 chars, no "/", ":" or whitespace. The
+# details/ping scripts take one as an argument, so it's checked before use.
+valid_iface() {
+  [[ $1 =~ ^[A-Za-z0-9_.-]{1,15}$ ]]
+}

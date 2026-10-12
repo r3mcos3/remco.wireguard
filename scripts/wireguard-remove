@@ -1,10 +1,12 @@
 #!/bin/bash
-# Deletes the "wg0" NetworkManager connection created by wireguard-import,
-# so the panel falls back to the "no profile yet" import browser. Only
-# removes the NetworkManager connection profile -- the original .conf file
-# the user imported from is untouched.
-if nmcli connection delete wg0 >/dev/null 2>&1; then
-  jq -nc '{ok:true}'
-else
-  jq -nc '{ok:false, error:"remove failed"}'
-fi
+# Deletes one WireGuard NetworkManager profile: wireguard-remove <uuid>.
+# Only removes the NetworkManager connection profile -- the original .conf
+# file the user imported from is untouched.
+source "$(dirname -- "$0")/wireguard-common"
+
+uuid="$1"
+
+is_wireguard_uuid "$uuid" || fail "profile not found"
+nmcli connection delete uuid "$uuid" >/dev/null 2>&1 || fail "remove failed"
+
+jq -nc '{ok:true}'

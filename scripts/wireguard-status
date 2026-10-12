@@ -1,16 +1,39 @@
 #!/bin/bash
-# Polled by the bar's "wireguard" command widget (see shell.json). Prints
-# Waybar-style JSON so the icon dims/brightens with connection.autoconnect
-# staying off -- this is purely a status read, never a toggle. Also reports
-# hasProfile so BarWidget.qml can swap the popup for an import prompt when
-# no wg0 NetworkManager connection has been set up yet.
-if nmcli -t -f NAME connection show 2>/dev/null | grep -qx "wg0"; then
-  state=$(nmcli -g GENERAL.STATE connection show wg0 2>/dev/null)
-  if [[ "$state" == activated* ]]; then
-    echo '{"text":"󰌾","tooltip":"WireGuard: on","class":"active","hasProfile":true}'
-  else
-    echo '{"text":"󰌾","tooltip":"WireGuard: off","class":"inactive","hasProfile":true}'
-  fi
-else
-  echo '{"text":"󰌾","tooltip":"WireGuard: no profile","class":"inactive","hasProfile":false}'
-fi
+# Polled by BarWidget.qml every 5s, panel open or not. Lists every WireGuard
+# NetworkManager profile and prints Waybar-style JSON for the bar icon plus
+# a `profiles` array the panel renders as its connection list:
+#
+#   {text, tooltip, class, hasProfile,
+#    profiles: [{uuid, name, device, state, active, autoconnect}, ...]}
+#
+# --escape no keeps NAME verbatim. It's the last field, so `read` hands it
+# any colons it has; DEVICE is a kernel interface name, which can't contain
+# one, so the split before it is always clean.
+profiles=$(
+  nmcli --escape no -t -f UUID,TYPE,AUTOCONNECT,STATE,DEVICE,NAME connection show 2>/dev/null |
+    while IFS=: read -r uuid type autoconnect state device name; do
+      [[ $type == wireguard ]] || continue
+      jq -nc \
+        --arg uuid "$uuid" \
+        --arg name "${name:0:200}" \
+        --arg device "$device" \
+        --arg state "$state" \
+        --arg autoconnect "$autoconnect" \
+        '{uuid: $uuid, name: $name, device: $device, state: $state,
+          active: ($state == "activated"), autoconnect: ($autoconnect == "yes")}'
+    done | head -n 100 | jq -sc 'sort_by(.name | ascii_downcase)'
+)
+
+jq -nc --argjson profiles "${profiles:-[]}" '
+  ($profiles | map(select(.active) | .name)) as $on
+  | {
+      text: "󰌾",
+      tooltip: (
+        if ($profiles | length) == 0 then "WireGuard: no profile"
+        elif ($on | length) > 0 then "WireGuard: " + ($on | join(", "))
+        else "WireGuard: off" end
+      ),
+      class: (if ($on | length) > 0 then "active" else "inactive" end),
+      hasProfile: (($profiles | length) > 0),
+      profiles: $profiles
+    }'
